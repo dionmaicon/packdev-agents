@@ -3,9 +3,11 @@ import path from "node:path";
 import { extractBump, isUnsupported, type Bump, type Unsupported } from "./extractBump.js";
 import { prepareWorkspace } from "./prepareWorkspace.js";
 import { runCompat } from "./runCompat.js";
+import { runApiDiff } from "./runApiDiff.js";
 import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
-import { render } from "./report.js";
+import { render, renderStaticIncompatible } from "./report.js";
 import { renderWithBrain, type Brain } from "./brain.js";
+import type { ApiDiffReport } from "./packdevTypes.js";
 
 export const DEFAULT_ALLOWED_ACTORS = ["dependabot[bot]", "renovate[bot]"];
 
@@ -71,6 +73,7 @@ export interface RunGithubPipelineOptions {
 export type RunGithubPipelineResult =
   | { status: "skipped-actor"; actor: string }
   | { status: "unsupported-bump"; bump: Unsupported }
+  | { status: "static-incompatible"; bump: Bump; apiDiff: ApiDiffReport }
   | { status: "verdict"; bump: Bump; verdict: Verdict; merged: boolean };
 
 /** Exported so main.ts can decide whether to fail the Action step itself using the same mapping as the check run conclusion, instead of duplicating the switch. */
@@ -153,27 +156,69 @@ export async function runGithubPipeline(
   // have been omitted entirely and left to auto-discovery).
   const appDir = path.join(workspace.dir, path.dirname(bump.packageJsonPath));
 
-  let verdict: Verdict;
+  type CompatStepResult =
+    | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
+    | { kind: "verdict"; verdict: Verdict };
+
+  let stepResult: CompatStepResult;
   try {
-    const result = await runCompat({
+    // Static, no install — cheap enough to always run first. Only skips
+    // the expensive sandboxed compat run on a CONFIDENT negative: a symbol
+    // the app statically imports is missing from the candidate's exports,
+    // AND no dynamic/namespace usage exists that could have hidden the
+    // real export list (hasDynamicUsage true, or a tri-state null
+    // apiCompatible, both fall through to the real compat run unchanged —
+    // see docs/architecture.md).
+    const apiDiffResult = await runApiDiff({
       appDir,
       packageName: bump.name,
-      versions: [bump.toVersion],
-      testCommand: options.testCommand,
-      // Duplicate-copy regressions (DI singletons, instanceof checks) are a
-      // real, distinct failure mode from an incompatible API — --check-dupes
-      // surfaces them as dupesRegression on the report (already rendered
-      // verbatim by report.ts). --seed-lockfile is required for accurate
-      // nested-fork detection: a fresh solve re-flattens away duplicates a
-      // real install would keep. Costs nothing extra: dupes are checked
-      // against installs compat already performs.
-      extraArgs: ["--check-dupes", "--seed-lockfile"],
+      toVersion: bump.toVersion,
     });
-    verdict = interpret(result.report, result.exitCode);
+    const candidateEntry = apiDiffResult.report.versions.find(
+      (v) => v.version === bump.toVersion,
+    );
+    const confidentNegative =
+      candidateEntry?.apiCompatible === false && !apiDiffResult.report.hasDynamicUsage;
+
+    if (confidentNegative) {
+      stepResult = { kind: "static-incompatible", apiDiff: apiDiffResult.report };
+    } else {
+      const result = await runCompat({
+        appDir,
+        packageName: bump.name,
+        versions: [bump.toVersion],
+        testCommand: options.testCommand,
+        // Duplicate-copy regressions (DI singletons, instanceof checks) are a
+        // real, distinct failure mode from an incompatible API — --check-dupes
+        // surfaces them as dupesRegression on the report (already rendered
+        // verbatim by report.ts). --seed-lockfile is required for accurate
+        // nested-fork detection: a fresh solve re-flattens away duplicates a
+        // real install would keep. Costs nothing extra: dupes are checked
+        // against installs compat already performs.
+        extraArgs: ["--check-dupes", "--seed-lockfile"],
+      });
+      stepResult = { kind: "verdict", verdict: interpret(result.report, result.exitCode) };
+    }
   } finally {
     await workspace.cleanup();
   }
 
+  if (stepResult.kind === "static-incompatible") {
+    const body = renderStaticIncompatible(bump, stepResult.apiDiff);
+    const commentBody = `${COMMENT_MARKER}\n${body}`;
+
+    await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
+    await options.github.createCheckRun({
+      name: "packdev compat",
+      conclusion: "failure",
+      title: `${bump.name} ${bump.fromVersion} → ${bump.toVersion}: STATIC_INCOMPATIBLE`,
+      summary: body,
+    });
+
+    return { status: "static-incompatible", bump, apiDiff: stepResult.apiDiff };
+  }
+
+  const verdict = stepResult.verdict;
   const body = await renderWithBrain(verdict, options.brain);
   const commentBody = `${COMMENT_MARKER}\n${body}`;
 

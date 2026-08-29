@@ -608,3 +608,115 @@ test(
     }
   },
 );
+
+/**
+ * A real repo whose app source actually imports the bumped package, needed
+ * for the api-diff static pre-filter tests below — makeRepo() above only
+ * ever writes a package.json, so packdev's static usage scan would find
+ * nothing to check and vacuously fall through to compat every time.
+ */
+async function makeRepoWithUsage(
+  baseDeps: Record<string, string>,
+  headDeps: Record<string, string>,
+  sourceContent: string,
+): Promise<{ repoDir: string; cleanup: () => Promise<void> }> {
+  const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-pipeline-apidiff-"));
+  await git(repoDir, ["init", "-q"]);
+  await git(repoDir, ["config", "user.email", "test@test.local"]);
+  await git(repoDir, ["config", "user.name", "test"]);
+  await mkdir(path.join(repoDir, "src"), { recursive: true });
+  await writeFile(path.join(repoDir, "src", "index.js"), sourceContent);
+  await writeFile(
+    path.join(repoDir, "package.json"),
+    JSON.stringify({ name: "fixture-app", version: "1.0.0", dependencies: baseDeps }, null, 2),
+  );
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "base"]);
+  await git(repoDir, ["branch", "base"]);
+
+  await writeFile(
+    path.join(repoDir, "package.json"),
+    JSON.stringify({ name: "fixture-app", version: "1.0.0", dependencies: headDeps }, null, 2),
+  );
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "bump"]);
+
+  return { repoDir, cleanup: () => rm(repoDir, { recursive: true, force: true }) };
+}
+
+test(
+  "runGithubPipeline: api-diff confident negative short-circuits — skips compat entirely, never auto-merge eligible",
+  { timeout: 60_000 },
+  async () => {
+    // is-odd never had a named "isOdd" export at any 3.x version — a real,
+    // deterministic confident negative (see runApiDiff.test.ts). testCommand
+    // is deliberately something that WOULD pass if compat ran at all
+    // (a trivial `true`), so a success/PASSED outcome here would only be
+    // possible if the short-circuit failed to prevent compat from running.
+    const { repoDir, cleanup } = await makeRepoWithUsage(
+      { "is-odd": "3.0.0" },
+      { "is-odd": "3.0.1" },
+      'const { isOdd } = require("is-odd");\nisOdd(3);\n',
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand: "true",
+        github,
+        autoMerge: true,
+      });
+
+      assert.equal(result.status, "static-incompatible");
+      if (result.status === "static-incompatible") {
+        assert.equal(result.bump.name, "is-odd");
+        assert.equal(result.apiDiff.hasDynamicUsage, false);
+        const candidate = result.apiDiff.versions.find((v) => v.version === "3.0.1");
+        assert.equal(candidate?.apiCompatible, false);
+      }
+
+      assert.equal(github.comments.length, 1);
+      assert.match(github.comments[0]!.body, /Incompatible \(static\)/);
+      assert.match(github.comments[0]!.body, /isOdd/);
+      assert.equal(github.checkRuns.length, 1);
+      assert.equal(github.checkRuns[0]!.conclusion, "failure");
+      assert.equal(github.mergeCalls, 0);
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+test(
+  "runGithubPipeline: dynamic (bare require) usage never short-circuits — always falls through to the real compat run",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, cleanup } = await makeRepoWithUsage(
+      { "is-odd": "3.0.0" },
+      { "is-odd": "3.0.1" },
+      'const isOdd = require("is-odd");\nisOdd(3);\n',
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
+        github,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "PASSED");
+      }
+    } finally {
+      await cleanup();
+    }
+  },
+);

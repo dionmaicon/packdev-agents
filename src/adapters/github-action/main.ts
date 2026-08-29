@@ -93,6 +93,18 @@ async function run(): Promise<void> {
     return;
   }
 
+  if (result.status === "static-incompatible") {
+    core.info(
+      `Static incompatible — ${result.bump.name} ${result.bump.fromVersion} → ` +
+        `${result.bump.toVersion}: packdev api-diff found a missing export, skipped the ` +
+        "sandboxed compat run.",
+    );
+    if (failStepOnNonPass) {
+      core.setFailed(`packdev api-diff: static incompatible bump for ${result.bump.name}`);
+    }
+    return;
+  }
+
   core.setOutput("verdict", result.verdict.kind);
   core.setOutput("merged", String(result.merged));
   core.info(`Verdict: ${result.verdict.kind} (merged: ${result.merged})`);

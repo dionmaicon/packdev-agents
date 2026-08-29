@@ -6,6 +6,9 @@ Both deployment modes in [`use-cases.md`](use-cases.md) run the same loop:
 dependabot PR opened
   -> extract the bump (package, from, to)
   -> prepare a workspace at the PR's BASE ref
+  -> run `packdev api-diff` (static, no install) as a fast pre-check
+       -> confident negative? report STATIC_INCOMPATIBLE, skip compat entirely
+       -> otherwise (compatible, or unresolved/dynamic usage): fall through
   -> run `packdev compat` against it
   -> interpret the report into a verdict
   -> report the verdict back on the PR
@@ -26,8 +29,8 @@ not used here at all. We consume only the dependency-testing side:
 | Command | Use to us |
 | --- | --- |
 | `compat` | The primary verdict. Sandboxed install + real test run per version. |
-| `api-diff` | Cheap static pre-check. No install. |
-| `dupes` | Duplicate-copy detection. Optional. |
+| `api-diff` | Static pre-filter, run before `compat`. No install — see below. |
+| `dupes` | Duplicate-copy detection, folded into every `compat` run via `--check-dupes`. |
 | `api` | Export map of the installed version. Diagnostic only. |
 | `behavior-diff` | Experimental. Not used in v1. |
 
@@ -168,6 +171,36 @@ then the nearest lockfile — we match that so our install agrees with its
 sandbox install), run a real install.
 
 This step is the control guard. It is not an optimization to skip it.
+
+### 2.5 `runApiDiff(appDir, bump) -> ApiDiffReport` — static pre-filter
+
+Spawn `packdev api-diff <name> --range <bump.toVersion> --app . --json` (a
+bare version string is itself a valid semver range matching only that
+version). Static — no sandboxed install — so this always runs before the
+expensive per-version `compat` sandbox.
+
+`interpret()`'s `Verdict` union only ever describes an outcome that came
+from a real `compat` run, so this is deliberately its OWN
+`RunGithubPipelineResult` status (`static-incompatible`), not folded into
+`Verdict` — mirrors the existing `unsupported-bump` short-circuit pattern
+rather than forcing a report shape that never ran a real test into the
+verdict machinery that assumes one did.
+
+Short-circuits — skips `compat` entirely — only on a CONFIDENT negative:
+
+```
+candidate.apiCompatible === false && !report.hasDynamicUsage
+```
+
+`apiCompatible` is tri-state (`boolean | null`): `null` means "could not
+verify" (unresolved barrel re-export, types-package fallback) and must
+never be treated as either a pass or a failure. `hasDynamicUsage` is true
+when the app uses the package via a namespace import or bare `require()`
+that the static scan can't enumerate exact symbols for — `usedSymbols`
+under-reports in that case, so a `true`/`false` conclusion from it can't be
+trusted either way. Every other combination (compatible, dynamic usage, or
+unresolved) falls through to the real `compat` run unchanged — this pre-filter
+only ever short-circuits toward a confident rejection, never toward a pass.
 
 ### 3. `runCompat(workspace, bump) -> CompatReport`
 

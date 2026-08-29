@@ -1,5 +1,6 @@
 import { candidatesOf, isAutoMergeEligible, type Verdict } from "./interpret.js";
-import type { CompatVersionResult } from "./packdevTypes.js";
+import type { ApiDiffReport, CompatVersionResult } from "./packdevTypes.js";
+import type { Bump } from "./extractBump.js";
 
 const MAX_OUTPUT_CHARS = 4000;
 
@@ -168,6 +169,40 @@ export function render(verdict: Verdict): string {
       ? "_Auto-merge eligible._"
       : "_Not auto-merge eligible — requires human review._",
   );
+
+  return lines.join("\n");
+}
+
+/**
+ * Renders the static-analysis short-circuit path: `packdev api-diff` found
+ * a CONFIDENT negative (a symbol the app statically imports is missing from
+ * the candidate version's exports, with no dynamic/namespace usage that
+ * could hide the real export list) — see pipeline.ts's static-incompatible
+ * branch. This never ran a sandboxed install or the app's real test
+ * command, so it is never auto-merge eligible, and is always its own thing,
+ * not a Verdict — interpret()'s Verdict union only ever describes an
+ * outcome that came from a real compat run.
+ */
+export function renderStaticIncompatible(bump: Bump, apiDiff: ApiDiffReport): string {
+  const entry = apiDiff.versions.find((v) => v.version === bump.toVersion);
+  const missing = entry?.missingSymbols ?? [];
+  const missingList = missing.map((s) => `\`${s}\``).join(", ");
+
+  const lines: string[] = [];
+  lines.push("### packdev compat — ⛔ Incompatible (static)");
+  lines.push("");
+  lines.push(`**${bump.name}**: \`${bump.fromVersion}\` → \`${bump.toVersion}\``);
+  lines.push("");
+  lines.push(
+    `Static analysis (\`packdev api-diff\`) found this app imports ${missingList} from ` +
+      `**${bump.name}**, which \`${bump.toVersion}\` does not export. **The bump is incompatible ` +
+      "with this app.** Skipped the full sandboxed test run — this is a confident result, not an " +
+      "approximation: no dynamic or namespace usage was found that could have hidden the real " +
+      "export list.",
+  );
+  lines.push("");
+  lines.push("_Static pre-check — no sandboxed install or test ran for this verdict._");
+  lines.push("_Not auto-merge eligible — requires human review._");
 
   return lines.join("\n");
 }

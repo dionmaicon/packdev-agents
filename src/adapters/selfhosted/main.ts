@@ -86,6 +86,11 @@ async function runOnce(): Promise<void> {
       console.log(`PR #${pr.number}: ${prResult.verdict.kind} (merged: ${prResult.merged})`);
     } else if (prResult.status === "unsupported-bump") {
       console.log(`PR #${pr.number}: unsupported bump — ${prResult.bump.reason}`);
+    } else if (prResult.status === "static-incompatible") {
+      console.log(
+        `PR #${pr.number}: static incompatible — ${prResult.bump.name} ` +
+          `${prResult.bump.fromVersion} → ${prResult.bump.toVersion} (packdev api-diff, skipped compat)`,
+      );
     }
   }
   if (result.skippedAlreadySeen.length > 0) {
