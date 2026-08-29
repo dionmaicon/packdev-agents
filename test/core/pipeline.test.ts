@@ -286,3 +286,119 @@ test(
     }
   },
 );
+
+test(
+  "runGithubPipeline: test command broken for reasons unrelated to the bump -> HARNESS_BROKEN, never blames the bump",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, cleanup } = await makeRepo(
+      { "is-odd": "3.0.0" },
+      { "is-odd": "3.0.1" },
+    );
+    try {
+      const github = fakeGitHubOps();
+      // Fails identically for control AND candidate — a broken harness,
+      // not a real incompatibility signal from either version.
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand: 'node -e "require(\'this-module-does-not-exist-xyz\')"',
+        github,
+        autoMerge: true,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "HARNESS_BROKEN");
+        assert.equal(result.merged, false);
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "failure");
+      assert.equal(github.mergeCalls, 0, "must never merge on a broken harness, even with autoMerge on");
+      assert.match(github.comments[0]!.body, /test harness itself is broken/);
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+test(
+  "runGithubPipeline: passing candidate with a type-check-only test command -> PASSED_WEAK, not auto-merge eligible",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, cleanup } = await makeRepo(
+      { "is-odd": "3.0.0" },
+      { "is-odd": "3.0.1" },
+    );
+    try {
+      // package.json needs to declare typescript for `npx tsc` to resolve
+      // inside packdev's sandbox, and tsc needs at least one input file to
+      // exit 0 (`tsc --noEmit` with zero matched files is TS18003, a
+      // genuine error) — amend the base commit's tree via a new commit on
+      // "base" so both control and candidate sandboxes have both.
+      await execFileAsync("git", ["checkout", "-q", "base"], { cwd: repoDir });
+      await writeFile(
+        path.join(repoDir, "package.json"),
+        JSON.stringify(
+          {
+            name: "fixture-app",
+            version: "1.0.0",
+            dependencies: { "is-odd": "3.0.0" },
+            devDependencies: { typescript: "^5.9.2" },
+          },
+          null,
+          2,
+        ),
+      );
+      await writeFile(
+        path.join(repoDir, "tsconfig.json"),
+        JSON.stringify({ compilerOptions: { strict: false, skipLibCheck: true } }, null, 2),
+      );
+      await writeFile(path.join(repoDir, "index.ts"), "export const x: number = 1;\n");
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "add typescript"]);
+      await git(repoDir, ["checkout", "-q", "master"]);
+      await writeFile(
+        path.join(repoDir, "package.json"),
+        JSON.stringify(
+          {
+            name: "fixture-app",
+            version: "1.0.0",
+            dependencies: { "is-odd": "3.0.1" },
+            devDependencies: { typescript: "^5.9.2" },
+          },
+          null,
+          2,
+        ),
+      );
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "bump on top of typescript commit"]);
+
+      const github = fakeGitHubOps();
+      // A bare `tsc --noEmit` is packdev's TYPE_CHECK_ONLY trigger
+      // (src/compat.ts's analyzeTestHarness) — matched on the command
+      // string itself, independent of whether it actually passes.
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand: "npx tsc --noEmit",
+        github,
+        autoMerge: true,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "PASSED_WEAK");
+        assert.equal(result.merged, false, "PASSED_WEAK must never auto-merge");
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "neutral");
+      assert.equal(github.mergeCalls, 0);
+      assert.match(github.comments[0]!.body, /TYPE_CHECK_ONLY/);
+    } finally {
+      await cleanup();
+    }
+  },
+);
