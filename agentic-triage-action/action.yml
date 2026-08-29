@@ -6,6 +6,21 @@ description: >-
   posts its findings as an advisory PR comment. Never gates a merge — this
   is meant to run ALONGSIDE the main "packdev compat check" action
   (../action.yml), not replace it.
+
+  IMPORTANT — set `timeout-minutes` on the calling JOB (a composite action
+  cannot set this on itself): each model API request already has its own
+  request-timeout-ms fail-fast guard (default 90s per request, not per
+  whole run — see agentLoop.ts), but that only protects against a single
+  stuck HTTP call. A job-level timeout-minutes is the actual cost backstop
+  — without one, a provider that keeps responding just slowly enough to
+  dodge each per-request timeout (or a runaway multi-turn loop) keeps
+  billing CI minutes indefinitely. Example:
+    jobs:
+      agentic-triage:
+        timeout-minutes: 5
+        steps:
+          - uses: dionmaicon/packdev-agents/agentic-triage-action@main
+            ...
 author: "dionmaicon"
 
 inputs:
@@ -51,6 +66,23 @@ inputs:
     required: false
   max-turns:
     description: "Hard cap on model/tool round-trips before this fails as a runaway loop. Defaults to 10."
+    required: false
+  request-timeout-ms:
+    description: >-
+      Hard cap per individual model API request (not per turn, not per
+      whole run) — fails fast when a provider stops responding entirely,
+      instead of hanging. Defaults to 90000 (90s). This is NOT a
+      replacement for setting timeout-minutes on the calling job (see the
+      top of this file) — that is the real CI-cost backstop.
+    required: false
+  max-output-tokens:
+    description: >-
+      Per-request max_tokens sent to the model. Defaults to 8000. Some
+      models (e.g. Z.ai's GLM Coding Plan models) spend a large, invisible
+      token budget on chain-of-thought reasoning before the visible
+      response even starts — too low a value cuts the response off with
+      finish_reason "length" and NO visible content at all, which surfaces
+      as a hard error, not a truncated report. Raise this if you see that.
     required: false
 
 outputs:
@@ -109,3 +141,5 @@ runs:
         INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}
         INPUT_PACKAGE-JSON-PATH: ${{ inputs.package-json-path }}
         INPUT_MAX-TURNS: ${{ inputs.max-turns }}
+        INPUT_REQUEST-TIMEOUT-MS: ${{ inputs.request-timeout-ms }}
+        INPUT_MAX-OUTPUT-TOKENS: ${{ inputs.max-output-tokens }}

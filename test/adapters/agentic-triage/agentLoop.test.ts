@@ -417,3 +417,48 @@ test("createOpenAiCompatibleAgentLoop: non-2xx response is a hard error surfacin
     },
   );
 });
+
+// --- Per-request timeout (protects against a genuinely stuck provider) ---
+
+test("createAnthropicAgentLoop: a request that never responds times out — fails fast instead of hanging", async () => {
+  await withFakeServer(
+    (_req, _res) => {
+      // Deliberately never call res.end() — simulates a provider that
+      // accepted the connection but never responds.
+    },
+    async (baseUrl) => {
+      const agentLoop = createAnthropicAgentLoop({ apiKey: "test-key", baseUrl, requestTimeoutMs: 200 });
+      await assert.rejects(
+        () =>
+          agentLoop.run({
+            systemPrompt: "sys",
+            userPrompt: "go",
+            tools: [fakeTool],
+            executeTool: async () => ({ text: "{}", isError: false }),
+          }),
+        /Anthropic API request timed out after 200ms.*stuck/,
+      );
+    },
+  );
+});
+
+test("createOpenAiCompatibleAgentLoop: a request that never responds times out — fails fast instead of hanging", async () => {
+  await withFakeServer(
+    (_req, _res) => {
+      // Same simulated stuck provider as the Anthropic case above.
+    },
+    async (baseUrl) => {
+      const agentLoop = createOpenAiCompatibleAgentLoop({ baseUrl, model: "glm-5.3-flash", requestTimeoutMs: 200 });
+      await assert.rejects(
+        () =>
+          agentLoop.run({
+            systemPrompt: "sys",
+            userPrompt: "go",
+            tools: [fakeTool],
+            executeTool: async () => ({ text: "{}", isError: false }),
+          }),
+        /OpenAI-compatible API request timed out after 200ms.*stuck/,
+      );
+    },
+  );
+});

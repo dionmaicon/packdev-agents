@@ -82,6 +82,19 @@ export interface AnthropicAgentLoopConfig {
   model?: string;
   baseUrl?: string;
   maxOutputTokens?: number;
+  /**
+   * Hard cap per HTTP request, not per turn or per whole run — a stuck
+   * provider (hung connection, no response ever) would otherwise block
+   * forever with nothing to catch it locally; in CI that means paying for
+   * a runner that never finishes on its own. Defaults to 90s: real
+   * reasoning-heavy responses observed in practice complete in well under
+   * that per single request (see docs/architecture.md "Agentic triage"),
+   * so this should only ever fire on a genuine stall, not a slow-but-
+   * working call. This is the fail-FAST guard; a CI job-level
+   * `timeout-minutes` is still the actual cost backstop — see
+   * agentic-triage-action/action.yml's top comment.
+   */
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -91,6 +104,7 @@ export interface AnthropicAgentLoopConfig {
 export function createAnthropicAgentLoop(config: AnthropicAgentLoopConfig): AgentLoop {
   const baseUrl = config.baseUrl ?? "https://api.anthropic.com";
   const model = config.model ?? "claude-sonnet-5";
+  const requestTimeoutMs = config.requestTimeoutMs ?? 90_000;
 
   return {
     async run(options: RunAgentLoopOptions): Promise<RunAgentLoopResult> {
@@ -105,21 +119,33 @@ export function createAnthropicAgentLoop(config: AnthropicAgentLoopConfig): Agen
       const toolCalls: AgentToolCallLog[] = [];
 
       for (let turn = 1; turn <= maxTurns; turn++) {
-        const response = await fetch(`${baseUrl}/v1/messages`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-api-key": config.apiKey,
-            "anthropic-version": "2023-06-01",
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: config.maxOutputTokens ?? 2000,
-            system: options.systemPrompt,
-            tools,
-            messages,
-          }),
-        });
+        let response: Response;
+        try {
+          response = await fetch(`${baseUrl}/v1/messages`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-api-key": config.apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: config.maxOutputTokens ?? 8000,
+              system: options.systemPrompt,
+              tools,
+              messages,
+            }),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+          });
+        } catch (error) {
+          if (error instanceof Error && error.name === "TimeoutError") {
+            throw new Error(
+              `Anthropic API request timed out after ${requestTimeoutMs}ms (turn ${turn}) — ` +
+                "the provider appears stuck, not just slow.",
+            );
+          }
+          throw error;
+        }
 
         if (!response.ok) {
           throw new Error(`Anthropic API error ${response.status}: ${await response.text()}`);
@@ -210,9 +236,13 @@ export interface OpenAiCompatibleAgentLoopConfig {
   apiKey?: string;
   model: string;
   maxOutputTokens?: number;
+  /** Same rationale as AnthropicAgentLoopConfig.requestTimeoutMs — a per-request fail-fast guard, not a whole-run budget. Defaults to 90s. */
+  requestTimeoutMs?: number;
 }
 
 export function createOpenAiCompatibleAgentLoop(config: OpenAiCompatibleAgentLoopConfig): AgentLoop {
+  const requestTimeoutMs = config.requestTimeoutMs ?? 90_000;
+
   return {
     async run(options: RunAgentLoopOptions): Promise<RunAgentLoopResult> {
       const maxTurns = options.maxTurns ?? 10;
@@ -232,19 +262,31 @@ export function createOpenAiCompatibleAgentLoop(config: OpenAiCompatibleAgentLoo
       const toolCalls: AgentToolCallLog[] = [];
 
       for (let turn = 1; turn <= maxTurns; turn++) {
-        const response = await fetch(`${config.baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
-          },
-          body: JSON.stringify({
-            model: config.model,
-            max_tokens: config.maxOutputTokens ?? 2000,
-            tools,
-            messages,
-          }),
-        });
+        let response: Response;
+        try {
+          response = await fetch(`${config.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
+            },
+            body: JSON.stringify({
+              model: config.model,
+              max_tokens: config.maxOutputTokens ?? 8000,
+              tools,
+              messages,
+            }),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+          });
+        } catch (error) {
+          if (error instanceof Error && error.name === "TimeoutError") {
+            throw new Error(
+              `OpenAI-compatible API request timed out after ${requestTimeoutMs}ms (turn ${turn}) ` +
+                "— the provider appears stuck, not just slow.",
+            );
+          }
+          throw error;
+        }
 
         if (!response.ok) {
           throw new Error(
@@ -263,9 +305,15 @@ export function createOpenAiCompatibleAgentLoop(config: OpenAiCompatibleAgentLoo
         if (requestedToolCalls.length === 0) {
           const text = (message.content ?? "").trim();
           if (!text) {
+            const lengthHint =
+              choice.finish_reason === "length"
+                ? " — the model was cut off by max_tokens before producing any content " +
+                  "(some models spend a large, invisible token budget on chain-of-thought " +
+                  "reasoning before the visible response even starts); raise maxOutputTokens."
+                : "";
             throw new Error(
               `OpenAI-compatible response had no message content and no tool_calls ` +
-                `(finish_reason: "${choice.finish_reason}")`,
+                `(finish_reason: "${choice.finish_reason}")${lengthHint}`,
             );
           }
           return { report: text, toolCalls, turns: turn };

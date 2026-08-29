@@ -8,12 +8,18 @@ import { createAnthropicAgentLoop, createOpenAiCompatibleAgentLoop, type AgentLo
 /** Mirrors github-action/main.ts's buildBrain() selector — same "one interface, pick a backend by input" shape. */
 function buildAgentLoop(): AgentLoop {
   const provider = core.getInput("model-provider") || "anthropic";
+  const requestTimeoutMsInput = core.getInput("request-timeout-ms");
+  const requestTimeoutMs = requestTimeoutMsInput ? Number(requestTimeoutMsInput) : undefined;
+  const maxOutputTokensInput = core.getInput("max-output-tokens");
+  const maxOutputTokens = maxOutputTokensInput ? Number(maxOutputTokensInput) : undefined;
 
   switch (provider) {
     case "anthropic":
       return createAnthropicAgentLoop({
         apiKey: core.getInput("anthropic-api-key", { required: true }),
         ...(core.getInput("anthropic-model") ? { model: core.getInput("anthropic-model") } : {}),
+        ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
+        ...(maxOutputTokens ? { maxOutputTokens } : {}),
       });
 
     case "openai-compatible":
@@ -23,6 +29,8 @@ function buildAgentLoop(): AgentLoop {
         ...(core.getInput("openai-compatible-api-key")
           ? { apiKey: core.getInput("openai-compatible-api-key") }
           : {}),
+        ...(requestTimeoutMs ? { requestTimeoutMs } : {}),
+        ...(maxOutputTokens ? { maxOutputTokens } : {}),
       });
 
     default:

@@ -348,6 +348,25 @@ job's trigger to fix this. Since the actor gate (`dependabot[bot]` only)
 already applies, this is the same trust boundary GitHub's own docs
 recommend for "Dependabot needs secrets" — not a wider exposure.
 
+**Cost/hang safeguards, also hit live:** a stuck provider (accepts the
+connection, never responds) has nothing local to catch it — `agentLoop.ts`
+now wraps every model API request in `AbortSignal.timeout()`
+(`requestTimeoutMs`, default 90s), which fails fast with a clear "provider
+appears stuck, not just slow" error instead of hanging. That is a
+per-request guard, not a whole-run budget, so it is NOT the actual CI-cost
+backstop — `agentic-triage-action/action.yml`'s top comment explicitly
+tells callers to set `timeout-minutes` on the JOB (a composite action
+can't set this on itself), since a provider that keeps responding just
+slowly enough to dodge each per-request timeout would otherwise keep
+billing CI minutes indefinitely. Separately: `max_tokens` defaults to 8000
+(`maxOutputTokens`, tunable per call) after a real run against a genuinely
+incompatible bump hit the old 2000 default — some models (Z.ai's GLM
+Coding Plan models observed doing this) spend a large, invisible token
+budget on chain-of-thought reasoning before the visible response even
+starts, so too low a budget cuts the response off with `finish_reason:
+"length"` and ZERO visible content, which surfaces as a hard error, not a
+truncated-but-usable report.
+
 Deliberately kept OUT of `interpret()`'s `Verdict` union and out of
 auto-merge eligibility entirely: this is the ONLY place in the repo where
 a model gets to decide what to DO next, not just what to say, and that is
