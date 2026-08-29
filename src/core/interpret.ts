@@ -73,7 +73,8 @@ export function isAutoMergeEligible(verdict: Verdict): verdict is PassedVerdict 
   return verdict.kind === "PASSED";
 }
 
-function candidatesOf(report: CompatReport): CompatVersionResult[] {
+/** Every tested version that isn't the control. Exported for report.ts, which needs the same selection to name what was actually tested. */
+export function candidatesOf(report: CompatReport): CompatVersionResult[] {
   const controlVersion = report.control?.version;
   return report.versions.filter((v) => v.version !== controlVersion);
 }
