@@ -50,14 +50,15 @@ export interface RunGithubPipelineOptions {
   testCommand: string;
   github: GitHubOps;
   /**
-   * Path to the target package.json, relative to repoDir. Defaults to
-   * "package.json" (repo root). Set this for a monorepo where the bumped
-   * dependency lives in a workspace member, e.g. "packages/api/package.json"
-   * — the compat sandbox is then run from that member's directory, not the
-   * repo root, so packdev's control resolution (node_modules-based) finds
-   * the right install. The install itself still runs from repoDir's root
-   * (prepareWorkspace), which is correct for real npm/yarn/pnpm workspaces:
-   * that's how those are meant to be installed.
+   * Optional, and usually not needed: an explicit override narrowing
+   * extractBump to ONE specific package.json, relative to repoDir. Without
+   * it (the default), extractBump auto-discovers whichever package.json
+   * actually changed between baseRef and headRef — the right behavior for
+   * a monorepo with more than one independently-Dependabot-tracked
+   * workspace member, since each gets its own PR touching a different
+   * file. Whichever file the bump is found in (bump.packageJsonPath) is
+   * what determines the compat sandbox's working directory below — this
+   * option only constrains *which* file extractBump is allowed to look at.
    */
   packageJsonPath?: string | undefined;
   /** Defaults to dependabot[bot] and renovate[bot]. Defense-in-depth: the caller workflow should already gate on actor at the job level. */
@@ -136,7 +137,7 @@ export async function runGithubPipeline(
   const workspace = await prepareWorkspace({
     repoDir: options.repoDir,
     baseRef: options.baseRef,
-    ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
+    packageJsonPath: bump.packageJsonPath,
   });
 
   // The install itself runs from the workspace root (correct for real
@@ -147,11 +148,10 @@ export async function runGithubPipeline(
   // actually invoke `packdev compat` themselves: cd into the package, run
   // it there — packdev's own workspace-mode auto-detection still widens
   // the sandbox to the whole monorepo root when workspace:-protocol deps
-  // require it, regardless of cwd.
-  const memberDir = options.packageJsonPath
-    ? path.dirname(options.packageJsonPath)
-    : ".";
-  const appDir = path.join(workspace.dir, memberDir);
+  // require it, regardless of cwd. Uses bump.packageJsonPath (what
+  // extractBump actually found), not options.packageJsonPath (which may
+  // have been omitted entirely and left to auto-discovery).
+  const appDir = path.join(workspace.dir, path.dirname(bump.packageJsonPath));
 
   let verdict: Verdict;
   try {

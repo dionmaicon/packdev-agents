@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,12 +17,14 @@ export interface Bump {
   fromVersion: string;
   toVersion: string;
   section: DependencySection;
+  /** Which package.json this bump was found in, relative to repoDir. */
+  packageJsonPath: string;
 }
 
 export interface Unsupported {
   kind: "unsupported";
   reason: string;
-  /** Populated for the grouped-PR case: every package this PR bumped. */
+  /** Populated for the grouped-PR case: every package this PR bumped, possibly across multiple package.json files. */
   bumps: Bump[];
 }
 
@@ -30,7 +33,16 @@ export interface ExtractBumpOptions {
   repoDir: string;
   baseRef: string;
   headRef: string;
-  /** package.json path relative to repoDir. Defaults to "package.json". */
+  /**
+   * Optional. When given, ONLY this file is checked (an explicit override —
+   * useful to pin scanning to one directory in a repo with unrelated
+   * package.json churn elsewhere). When omitted (the default, and the right
+   * choice for a monorepo with more than one independently-Dependabot-
+   * tracked workspace member), every package.json that actually changed
+   * between baseRef and headRef is discovered and checked — a fixed single
+   * path can't work once more than one workspace member has its own
+   * Dependabot config, since each gets its own PR touching a different file.
+   */
   packageJsonPath?: string;
 }
 
@@ -77,24 +89,16 @@ async function readPackageJsonAt(
   return parsed as PackageJsonDeps;
 }
 
-/**
- * Identifies what a bot PR actually bumped by diffing package.json between
- * the PR's base and head refs — NOT by parsing the PR title, which is
- * bot-formatted and varies across Dependabot/Renovate, ecosystem, and
- * grouped-update configuration.
- *
- * Returns Unsupported when zero or more than one dependency's version
- * changed: a grouped update bumps several packages in one PR, and guessing
- * which one to test would produce a verdict that doesn't answer the PR.
- */
-export async function extractBump(
-  options: ExtractBumpOptions,
-): Promise<Bump | Unsupported> {
-  const packageJsonPath = options.packageJsonPath ?? "package.json";
-
+/** Every real dependency-version bump found in one specific package.json between two refs. Usually zero or one; more than one means a grouped update within that single file. */
+async function bumpsInFile(
+  repoDir: string,
+  baseRef: string,
+  headRef: string,
+  packageJsonPath: string,
+): Promise<Bump[]> {
   const [basePkg, headPkg] = await Promise.all([
-    readPackageJsonAt(options.repoDir, options.baseRef, packageJsonPath),
-    readPackageJsonAt(options.repoDir, options.headRef, packageJsonPath),
+    readPackageJsonAt(repoDir, baseRef, packageJsonPath),
+    readPackageJsonAt(repoDir, headRef, packageJsonPath),
   ]);
 
   const bumps: Bump[] = [];
@@ -110,14 +114,77 @@ export async function extractBump(
       if (!isRegistrySpecifier(fromVersion) || !isRegistrySpecifier(toVersion)) {
         continue; // e.g. workspace:/file:/git — not a registry version bump
       }
-      bumps.push({ name, fromVersion, toVersion, section });
+      bumps.push({ name, fromVersion, toVersion, section, packageJsonPath });
     }
   }
+
+  return bumps;
+}
+
+/**
+ * Every package.json that differs between baseRef and headRef, relative to
+ * repoDir — the candidate set for auto-discovery. Excludes anything under
+ * node_modules defensively (should never be tracked, but a repo that
+ * accidentally committed it shouldn't make discovery scan it).
+ */
+async function discoverChangedPackageJsonPaths(
+  repoDir: string,
+  baseRef: string,
+  headRef: string,
+): Promise<string[]> {
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "git",
+      ["diff", "--name-only", baseRef, headRef],
+      { cwd: repoDir, maxBuffer: 10 * 1024 * 1024 },
+    ));
+  } catch (error) {
+    throw new Error(
+      `Could not diff ${baseRef}..${headRef} in ${repoDir}: ${String(error)}`,
+    );
+  }
+
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((filePath) => path.basename(filePath) === "package.json")
+    .filter((filePath) => !filePath.split("/").includes("node_modules"));
+}
+
+/**
+ * Identifies what a bot PR actually bumped by diffing package.json between
+ * the PR's base and head refs — NOT by parsing the PR title, which is
+ * bot-formatted and varies across Dependabot/Renovate, ecosystem, and
+ * grouped-update configuration.
+ *
+ * Returns Unsupported when zero or more than one dependency's version
+ * changed (whether within one file or spread across several — a monorepo
+ * with multiple independently-tracked workspace members can have either):
+ * a grouped update bumps several packages in one PR, and guessing which one
+ * to test would produce a verdict that doesn't answer the PR.
+ */
+export async function extractBump(
+  options: ExtractBumpOptions,
+): Promise<Bump | Unsupported> {
+  const filesToCheck = options.packageJsonPath
+    ? [options.packageJsonPath]
+    : await discoverChangedPackageJsonPaths(options.repoDir, options.baseRef, options.headRef);
+
+  const bumpLists = await Promise.all(
+    filesToCheck.map((filePath) =>
+      bumpsInFile(options.repoDir, options.baseRef, options.headRef, filePath),
+    ),
+  );
+  const bumps = bumpLists.flat();
 
   if (bumps.length === 0) {
     return {
       kind: "unsupported",
-      reason: "No dependency version change found between base and head package.json",
+      reason: options.packageJsonPath
+        ? `No dependency version change found in ${options.packageJsonPath} between base and head`
+        : "No dependency version change found in any package.json between base and head",
       bumps: [],
     };
   }

@@ -66,6 +66,7 @@ test("extractBump: single dependency version bump", async () => {
         fromVersion: "11.0.0",
         toVersion: "11.1.0",
         section: "dependencies",
+        packageJsonPath: "package.json",
       });
     }
   } finally {
@@ -182,6 +183,180 @@ test("extractBump: workspace: specifier bump is ignored (not a registry version)
       repoDir,
       baseRef: "base",
       headRef: "HEAD",
+    });
+
+    assert.equal(isUnsupported(result), true);
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+// --- auto-discovery: no packageJsonPath given, more than one package.json exists in the repo ---
+
+async function writeFileAt(
+  repoDir: string,
+  relativePath: string,
+  content: unknown,
+): Promise<void> {
+  const { mkdir, writeFile: write } = await import("node:fs/promises");
+  await mkdir(path.dirname(path.join(repoDir, relativePath)), { recursive: true });
+  await write(path.join(repoDir, relativePath), JSON.stringify(content, null, 2));
+}
+
+test("extractBump: auto-discovery finds the bump in a workspace member when root package.json has no deps", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writeFileAt(repoDir, "package.json", {
+      name: "monorepo-root",
+      private: true,
+      workspaces: ["packages/*"],
+    });
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.18.2" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.19.0" },
+    });
+    await commit(repoDir, "bump express in api");
+
+    const result = await extractBump({ repoDir, baseRef: "base", headRef: "HEAD" });
+
+    assert.equal(isUnsupported(result), false);
+    if (!isUnsupported(result)) {
+      assert.deepEqual(result, {
+        name: "express",
+        fromVersion: "4.18.2",
+        toVersion: "4.19.0",
+        section: "dependencies",
+        packageJsonPath: "packages/api/package.json",
+      });
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: auto-discovery picks the ONE workspace member that changed, ignoring unchanged siblings", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writeFileAt(repoDir, "package.json", {
+      name: "monorepo-root",
+      private: true,
+      workspaces: ["packages/*"],
+    });
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.18.2" },
+    });
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { express: "4.18.2" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    // Only packages/worker changes on this PR — packages/api is untouched,
+    // matching how Dependabot opens a SEPARATE PR per tracked directory.
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { express: "4.19.0" },
+    });
+    await commit(repoDir, "bump express in worker only");
+
+    const result = await extractBump({ repoDir, baseRef: "base", headRef: "HEAD" });
+
+    assert.equal(isUnsupported(result), false);
+    if (!isUnsupported(result)) {
+      assert.equal(result.packageJsonPath, "packages/worker/package.json");
+      assert.equal(result.fromVersion, "4.18.2");
+      assert.equal(result.toVersion, "4.19.0");
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: bumps in two different package.json files at once -> Unsupported grouped, listing both", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writeFileAt(repoDir, "package.json", {
+      name: "monorepo-root",
+      private: true,
+      workspaces: ["packages/*"],
+    });
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.18.2" },
+    });
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { express: "4.18.2" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.19.0" },
+    });
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { express: "4.19.0" },
+    });
+    await commit(repoDir, "bump express in both");
+
+    const result = await extractBump({ repoDir, baseRef: "base", headRef: "HEAD" });
+
+    assert.equal(isUnsupported(result), true);
+    if (isUnsupported(result)) {
+      assert.equal(result.bumps.length, 2);
+      const paths = result.bumps.map((b) => b.packageJsonPath).sort();
+      assert.deepEqual(paths, ["packages/api/package.json", "packages/worker/package.json"]);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: explicit packageJsonPath override restricts scanning to that one file, ignoring a bump elsewhere", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writeFileAt(repoDir, "package.json", {
+      name: "monorepo-root",
+      private: true,
+      workspaces: ["packages/*"],
+    });
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.18.2" },
+    });
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { express: "4.18.2" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    // Only worker changes...
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { express: "4.19.0" },
+    });
+    await commit(repoDir, "bump express in worker only");
+
+    // ...but the caller explicitly pins scanning to api, which has no
+    // change — must report Unsupported (no change found there), NOT fall
+    // back to discovering worker's bump.
+    const result = await extractBump({
+      repoDir,
+      baseRef: "base",
+      headRef: "HEAD",
+      packageJsonPath: "packages/api/package.json",
     });
 
     assert.equal(isUnsupported(result), true);

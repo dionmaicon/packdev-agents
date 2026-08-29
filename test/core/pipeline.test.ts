@@ -531,3 +531,80 @@ test(
     }
   },
 );
+
+test(
+  "runGithubPipeline: NO packageJsonPath given — auto-discovers which workspace member changed, with two members present",
+  { timeout: 120_000 },
+  async () => {
+    const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-monorepo2-"));
+    try {
+      await git(repoDir, ["init", "-q"]);
+      await git(repoDir, ["config", "user.email", "test@test.local"]);
+      await git(repoDir, ["config", "user.name", "test"]);
+
+      await writeFile(
+        path.join(repoDir, "package.json"),
+        JSON.stringify(
+          { name: "monorepo-root", version: "1.0.0", private: true, workspaces: ["packages/*"] },
+          null,
+          2,
+        ),
+      );
+      await mkdir(path.join(repoDir, "packages", "api"), { recursive: true });
+      await mkdir(path.join(repoDir, "packages", "worker"), { recursive: true });
+      await writeFile(
+        path.join(repoDir, "packages", "api", "package.json"),
+        JSON.stringify(
+          { name: "@fixture/api", version: "1.0.0", dependencies: { "is-odd": "3.0.0" } },
+          null,
+          2,
+        ),
+      );
+      await writeFile(
+        path.join(repoDir, "packages", "worker", "package.json"),
+        JSON.stringify(
+          { name: "@fixture/worker", version: "1.0.0", dependencies: { "is-odd": "3.0.0" } },
+          null,
+          2,
+        ),
+      );
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "base"]);
+      await git(repoDir, ["branch", "base"]);
+
+      // Only worker changes on this PR, matching Dependabot's per-directory
+      // PRs — api is left untouched.
+      await writeFile(
+        path.join(repoDir, "packages", "worker", "package.json"),
+        JSON.stringify(
+          { name: "@fixture/worker", version: "1.0.0", dependencies: { "is-odd": "3.0.1" } },
+          null,
+          2,
+        ),
+      );
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "bump is-odd in worker only"]);
+
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
+        github,
+        // No packageJsonPath — this is the point of the test.
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.bump.packageJsonPath, "packages/worker/package.json");
+        assert.equal(result.verdict.kind, "PASSED");
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  },
+);

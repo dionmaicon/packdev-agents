@@ -141,13 +141,25 @@ inward only.
 
 ### 1. `extractBump(pr) -> Bump | Unsupported`
 
-`{ name, fromVersion, toVersion, section }`, read from the **package.json
-diff**, not the PR title — titles are formatted by the bot and vary between
-Dependabot and Renovate, ecosystems, and grouped-update configs.
+`{ name, fromVersion, toVersion, section, packageJsonPath }`, read from the
+**package.json diff**, not the PR title — titles are formatted by the bot
+and vary between Dependabot and Renovate, ecosystems, and grouped-update
+configs.
 
-Grouped PRs bumping several packages at once return `Unsupported` in v1 and
-are reported as such. Guessing which package to test would produce a verdict
-that does not answer the PR.
+`packageJsonPath` is auto-discovered by default: every `package.json` that
+actually changed between the PR's base and head is found via `git diff
+--name-only`, and each is checked for a real dependency-version change. A
+monorepo with more than one independently-Dependabot-tracked workspace
+member needs this — each member gets its own PR touching a different file,
+so a single fixed path can't work past the first tracked package. An
+explicit path can still be passed to pin scanning to one file, which is
+useful for narrowing scope in a repo with unrelated `package.json` churn
+elsewhere, but it's an override, not the default.
+
+Grouped bumps — more than one dependency version changed, whether within one
+file or spread across several files at once — return `Unsupported` in v1 and
+are reported as such, listing every bump found. Guessing which one to test
+would produce a verdict that does not answer the PR.
 
 ### 2. `prepareWorkspace(baseRef) -> Workspace`
 
@@ -245,12 +257,17 @@ never the verdict.
 
 ## Known limitations to carry into the reports
 
-- **Monorepos.** The most common "reports nothing useful" case is a bump to a
-  package that is lockfile-hoisted but not declared in the specific app's own
-  package.json. `compat` throws (exit 1), and when another workspace in a
-  discoverable monorepo root declares it, packdev turns that into a hint
-  naming the workspace. v1 surfaces the hint; pointing `--app` at the right
-  workspace, or `--fan-out` from the root, is future work.
+- **Monorepos.** `extractBump`'s auto-discovery (see "core / extractBump"
+  above) resolves the historically most common "reports nothing useful"
+  case — a bump declared in one workspace member's package.json no longer
+  needs a caller-supplied path pointing at the right member; the diff itself
+  tells us where it lives, and the compat sandbox is run from there.
+  Genuinely remaining: bumping a dependency that OTHER workspace members
+  consume only via a local `workspace:` link to the bumped member (not the
+  bumped package directly) isn't tested by v1 — only the member whose own
+  package.json declared the bump is checked. `--fan-out` from the monorepo
+  root exists in packdev for exactly this and is future work to wire up
+  here.
 - **`nonMonotonic`** on a linear scan means pass/fail was not contiguous
   across versions, so `minimum`/`recommended` may not mean what they appear
   to. Not reachable in v1's single-version runs, but must be handled if we

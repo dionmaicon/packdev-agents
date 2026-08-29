@@ -26,9 +26,12 @@ inputs:
     default: "true"
   package-json-path:
     description: >-
-      Path to the target package.json, relative to the repo root. Defaults
-      to "package.json" (repo root). Set this for a monorepo where the
-      bumped dependency lives in a workspace member, e.g.
+      Optional override, relative to the repo root. Without it (the
+      default), the action auto-discovers which package.json actually
+      changed between the PR's base and head — the right behavior for a
+      monorepo with more than one independently-Dependabot-tracked
+      workspace member, since each gets its own PR touching a different
+      file. Set this only to explicitly pin scanning to one file, e.g.
       "packages/api/package.json".
     required: false
   brain:
