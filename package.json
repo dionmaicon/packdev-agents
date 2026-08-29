@@ -10,9 +10,12 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts"
+    "pretest": "npm run build",
+    "test": "node --import tsx --test $(find test -name '*.test.ts')"
   },
   "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
     "packdev": "^0.4.2",
     "semver": "^7.8.5"
   },

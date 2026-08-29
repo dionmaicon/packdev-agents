@@ -1,0 +1,96 @@
+name: "packdev compat check"
+description: >-
+  Runs packdev compat against a bumped dependency on a Dependabot/Renovate
+  PR and reports a verdict as a PR comment and check run.
+author: "dionmaicon"
+
+inputs:
+  test-command:
+    description: "Command to run inside the sandboxed install to verify compatibility."
+    required: true
+  github-token:
+    description: "Token used to post the check run and PR comment. Needs pull-requests: write and checks: write."
+    required: true
+    default: ${{ github.token }}
+  auto-merge:
+    description: "Merge the PR automatically when the verdict is PASSED. Off by default."
+    required: false
+    default: "false"
+  allowed-actors:
+    description: "Comma-separated list of PR authors this action acts on."
+    required: false
+    default: "dependabot[bot],renovate[bot]"
+  fail-step-on-non-pass:
+    description: "Fail this Action step (in addition to the check run conclusion) when the verdict isn't PASSED or PASSED_WEAK."
+    required: false
+    default: "true"
+  brain:
+    description: >-
+      Model backend for failure-summary prose only — never decides
+      pass/fail. One of: none, anthropic, openai-compatible.
+    required: false
+    default: "none"
+  anthropic-api-key:
+    description: "Required when brain: anthropic."
+    required: false
+  anthropic-model:
+    description: "Defaults to claude-sonnet-5."
+    required: false
+  openai-compatible-base-url:
+    description: "Required when brain: openai-compatible. E.g. https://api.openai.com/v1, or a local Ollama/vLLM endpoint."
+    required: false
+  openai-compatible-api-key:
+    description: "Optional — local endpoints usually don't need one."
+    required: false
+  openai-compatible-model:
+    description: "Required when brain: openai-compatible."
+    required: false
+
+outputs:
+  status:
+    description: "skipped-actor | unsupported-bump | verdict"
+  verdict:
+    description: "The Verdict kind (only set when status is verdict): NO_CONTROL, HARNESS_BROKEN, INSTALL_FAILED, NOTHING_TESTED, INCOMPATIBLE, PASSED_WEAK, PASSED."
+  merged:
+    description: "\"true\" if auto-merge fired (only set when status is verdict)."
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        # Full history is required: prepareWorkspace checks out and installs
+        # the PR's BASE ref (not the head) so packdev's control resolution
+        # gets the pre-bump version — see docs/architecture.md "The control
+        # problem". A shallow checkout can leave the base commit unreachable.
+        fetch-depth: 0
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install packdev-agents
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Build packdev-agents
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm run build
+
+    - name: Run packdev compat check
+      shell: bash
+      run: node ${{ github.action_path }}/dist/adapters/github-action/main.js
+      env:
+        INPUT_TEST-COMMAND: ${{ inputs.test-command }}
+        INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}
+        INPUT_AUTO-MERGE: ${{ inputs.auto-merge }}
+        INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}
+        INPUT_FAIL-STEP-ON-NON-PASS: ${{ inputs.fail-step-on-non-pass }}
+        INPUT_BRAIN: ${{ inputs.brain }}
+        INPUT_ANTHROPIC-API-KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_ANTHROPIC-MODEL: ${{ inputs.anthropic-model }}
+        INPUT_OPENAI-COMPATIBLE-BASE-URL: ${{ inputs.openai-compatible-base-url }}
+        INPUT_OPENAI-COMPATIBLE-API-KEY: ${{ inputs.openai-compatible-api-key }}
+        INPUT_OPENAI-COMPATIBLE-MODEL: ${{ inputs.openai-compatible-model }}
