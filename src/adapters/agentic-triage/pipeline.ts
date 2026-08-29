@@ -1,6 +1,12 @@
 import path from "node:path";
 
-import { extractBump, isUnsupported, type Bump, type Unsupported } from "../../core/extractBump.js";
+import {
+  extractBump,
+  isUnsupported,
+  isCrossFileBump,
+  type Bump,
+  type Unsupported,
+} from "../../core/extractBump.js";
 import { prepareWorkspace } from "../../core/prepareWorkspace.js";
 import { DEFAULT_ALLOWED_ACTORS, type GitHubOps } from "../../core/pipeline.js";
 import { runAgenticTriage, type AgenticTriageResult } from "./triage.js";
@@ -74,12 +80,25 @@ export async function runAgenticTriagePipeline(
     return { status: "skipped-actor", actor: options.actor };
   }
 
-  const bump = await extractBump({
+  const bumpResult = await extractBump({
     repoDir: options.repoDir,
     baseRef: options.baseRef,
     headRef: options.headRef,
     ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
   });
+
+  // Cross-file bumps (the same package bumped across multiple independent
+  // apps — see core/pipeline.ts, which DOES support this) are out of scope
+  // for the agentic path in v1: it would need one agent loop run per app,
+  // a bigger lift than this experimental adapter currently does. Reported
+  // the same way an ordinary unsupported bump would be.
+  const bump: Bump | Unsupported = isCrossFileBump(bumpResult)
+    ? {
+        kind: "unsupported",
+        reason: `${bumpResult.name} ${bumpResult.toVersion} bumped across ${bumpResult.bumps.length} apps — cross-file bumps aren't supported by agentic-triage yet`,
+        bumps: bumpResult.bumps,
+      }
+    : bumpResult;
 
   if (isUnsupported(bump)) {
     const body =

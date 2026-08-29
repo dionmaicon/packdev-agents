@@ -174,14 +174,32 @@ earlier real run bumping `@nestjs/core` alone, without its `@nestjs/common`
 peer, produced a genuine runtime break that a grouped test correctly
 avoids by construction.
 
-Still `Unsupported`, and reported as such listing every bump found: bumps
-spread across MORE THAN ONE `package.json` (a monorepo can have this), or
-bumps within one file landing on DIFFERING target versions — packdev's
-`--group` can only pin companions to the exact same version string as the
-primary being tested, not to their own independent target, so a
-heterogeneous grouped update genuinely can't be expressed as one compat
-run. Guessing which one to test in that case would produce a verdict that
-does not answer the PR.
+Bumps spread across MULTIPLE `package.json` files are also supported for
+the common real case: the SAME package to the SAME target version in each
+file (e.g. `@nestjs/core` needing to move in both `apps/gateway` and
+`apps/notifier`, which Dependabot batched into one PR instead of two —
+real-world verified via a live PR on `packdev-demo-nestjs`). Returned as
+`CrossFileBump` (`extractBump.ts`) — architecturally different from
+`Bump.group` above: a `--group` pin works WITHIN one sandbox/app, but two
+apps are genuinely independent, so `runGithubPipeline` instead runs the
+whole static-prefilter-then-compat sequence once per affected app (all
+sharing ONE `prepareWorkspace` checkout — it always installs from the
+repo root regardless of which `packageJsonPath` is passed, so there's no
+need to check out per app) and combines the results into one comment,
+one per-app heading each. Auto-merge requires EVERY app to have genuinely
+`PASSED` — one app silently staying broken doesn't get outvoted by another
+app passing. The agentic-triage adapter (below) does not support this
+shape yet — it would need one agent-loop run per app, a bigger lift than
+that experimental adapter currently does — and reports it the same way an
+ordinary unsupported bump would be.
+
+Still `Unsupported`, and reported as such listing every bump found: a
+grouped update within one file landing on DIFFERING target versions
+(`--group` can't express that — see above), or a genuinely heterogeneous
+cross-file case (different packages, or the same package to different
+target versions, across files) — none of these can be expressed as
+packdev compat runs without guessing which one to test, which would
+produce a verdict that doesn't answer the PR.
 
 ### 2. `prepareWorkspace(baseRef) -> Workspace`
 

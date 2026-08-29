@@ -105,6 +105,26 @@ async function run(): Promise<void> {
     return;
   }
 
+  if (result.status === "cross-file-verdict") {
+    const conclusions = result.results.map((r) =>
+      r.step.kind === "static-incompatible" ? "failure" : checkConclusionFor(r.step.verdict),
+    );
+    const worst = conclusions.includes("failure")
+      ? "failure"
+      : conclusions.includes("neutral")
+        ? "neutral"
+        : "success";
+    core.setOutput("merged", String(result.merged));
+    core.info(
+      `Cross-file bump — ${result.bump.name} ${result.bump.toVersion} across ` +
+        `${result.results.length} apps: ${worst} (merged: ${result.merged})`,
+    );
+    if (failStepOnNonPass && worst === "failure") {
+      core.setFailed(`packdev compat: at least one app failed for ${result.bump.name} ${result.bump.toVersion}`);
+    }
+    return;
+  }
+
   core.setOutput("verdict", result.verdict.kind);
   core.setOutput("merged", String(result.merged));
   core.info(`Verdict: ${result.verdict.kind} (merged: ${result.merged})`);

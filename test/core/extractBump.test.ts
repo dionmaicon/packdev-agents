@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { extractBump, isUnsupported } from "../../src/core/extractBump.ts";
+import { extractBump, isUnsupported, isCrossFileBump } from "../../src/core/extractBump.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -327,7 +327,7 @@ test("extractBump: auto-discovery picks the ONE workspace member that changed, i
   }
 });
 
-test("extractBump: bumps in two different package.json files at once -> Unsupported grouped, listing both", async () => {
+test("extractBump: the SAME package to the SAME version across two package.json files -> supported as a CrossFileBump", async () => {
   const repoDir = await makeRepo();
   try {
     await writeFileAt(repoDir, "package.json", {
@@ -358,11 +358,56 @@ test("extractBump: bumps in two different package.json files at once -> Unsuppor
 
     const result = await extractBump({ repoDir, baseRef: "base", headRef: "HEAD" });
 
-    assert.equal(isUnsupported(result), true);
-    if (isUnsupported(result)) {
+    assert.equal(isUnsupported(result), false);
+    assert.equal(isCrossFileBump(result), true);
+    if (isCrossFileBump(result)) {
+      assert.equal(result.name, "express");
+      assert.equal(result.toVersion, "4.19.0");
       assert.equal(result.bumps.length, 2);
       const paths = result.bumps.map((b) => b.packageJsonPath).sort();
       assert.deepEqual(paths, ["packages/api/package.json", "packages/worker/package.json"]);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: DIFFERENT packages bumped across two package.json files -> Unsupported (not a valid cross-file or same-file group)", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writeFileAt(repoDir, "package.json", {
+      name: "monorepo-root",
+      private: true,
+      workspaces: ["packages/*"],
+    });
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.18.2" },
+    });
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { lodash: "4.17.20" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writeFileAt(repoDir, "packages/api/package.json", {
+      name: "@fixture/api",
+      dependencies: { express: "4.19.0" },
+    });
+    await writeFileAt(repoDir, "packages/worker/package.json", {
+      name: "@fixture/worker",
+      dependencies: { lodash: "4.17.21" },
+    });
+    await commit(repoDir, "bump different packages in each");
+
+    const result = await extractBump({ repoDir, baseRef: "base", headRef: "HEAD" });
+
+    assert.equal(isUnsupported(result), true);
+    assert.equal(isCrossFileBump(result), false);
+    if (isUnsupported(result)) {
+      assert.equal(result.bumps.length, 2);
+      assert.match(result.reason, /across 2 package\.json files/);
     }
   } finally {
     await rm(repoDir, { recursive: true, force: true });

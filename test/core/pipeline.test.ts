@@ -774,3 +774,82 @@ test(
   },
 );
 
+
+test(
+  "runGithubPipeline: cross-file bump — the SAME package bumped to the SAME version in two independent apps runs once per app and aggregates a real verdict",
+  { timeout: 60_000 },
+  async () => {
+    const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-crossfile-"));
+    try {
+      await git(repoDir, ["init", "-q"]);
+      await git(repoDir, ["config", "user.email", "test@test.local"]);
+      await git(repoDir, ["config", "user.name", "test"]);
+      await writeFile(
+        path.join(repoDir, "package.json"),
+        JSON.stringify({ name: "monorepo-root", version: "1.0.0", private: true, workspaces: ["apps/*"] }, null, 2),
+      );
+      const nestDeps = (version: string) => ({
+        "@nestjs/core": version,
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.8.2",
+      });
+      for (const app of ["gateway", "notifier"]) {
+        await mkdir(path.join(repoDir, "apps", app), { recursive: true });
+        await writeFile(
+          path.join(repoDir, "apps", app, "package.json"),
+          JSON.stringify({ name: `@fixture/${app}`, version: "1.0.0", dependencies: nestDeps("11.0.0") }, null, 2),
+        );
+      }
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "base"]);
+      await git(repoDir, ["branch", "base"]);
+
+      for (const app of ["gateway", "notifier"]) {
+        await writeFile(
+          path.join(repoDir, "apps", app, "package.json"),
+          JSON.stringify({ name: `@fixture/${app}`, version: "1.0.0", dependencies: nestDeps("11.2.3") }, null, 2),
+        );
+      }
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "bump @nestjs/core in both apps"]);
+
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "require(\'reflect-metadata\'); require(\'@nestjs/core\')"',
+        github,
+        autoMerge: true,
+      });
+
+      assert.equal(result.status, "cross-file-verdict");
+      if (result.status === "cross-file-verdict") {
+        assert.equal(result.bump.name, "@nestjs/core");
+        assert.equal(result.bump.toVersion, "11.2.3");
+        assert.equal(result.results.length, 2);
+        const paths = result.results.map((r) => r.bump.packageJsonPath).sort();
+        assert.deepEqual(paths, ["apps/gateway/package.json", "apps/notifier/package.json"]);
+        for (const { step } of result.results) {
+          assert.equal(step.kind, "verdict");
+          if (step.kind === "verdict") {
+            assert.equal(step.verdict.kind, "PASSED");
+          }
+        }
+        assert.equal(result.merged, true);
+      }
+
+      assert.equal(github.comments.length, 1);
+      assert.match(github.comments[0]!.body, /@nestjs\/core.*bumped across 2 apps/);
+      assert.match(github.comments[0]!.body, /apps\/gateway\/package\.json/);
+      assert.match(github.comments[0]!.body, /apps\/notifier\/package\.json/);
+      assert.equal(github.checkRuns.length, 1);
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+      assert.equal(github.mergeCalls, 1);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  },
+);

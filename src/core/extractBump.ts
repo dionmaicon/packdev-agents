@@ -35,6 +35,24 @@ export interface Bump {
   group?: string[];
 }
 
+/**
+ * The SAME package bumped to the SAME target version across MULTIPLE
+ * package.json files in one PR — e.g. a monorepo where @nestjs/core needs
+ * bumping in both apps/gateway and apps/notifier, and Dependabot batched
+ * what would normally be two separate per-app PRs into one. Distinct from
+ * Bump.group (multiple DIFFERENT packages in ONE file, pinned via
+ * `--group`): this is one package, tested independently once per app,
+ * since packdev's compat sandbox is scoped to one app directory and can't
+ * express "these two independent apps" as a single run.
+ */
+export interface CrossFileBump {
+  kind: "cross-file";
+  name: string;
+  toVersion: string;
+  /** One entry per affected package.json — each run through the pipeline independently and the results combined into one comment. */
+  bumps: Bump[];
+}
+
 export interface Unsupported {
   kind: "unsupported";
   reason: string;
@@ -186,7 +204,7 @@ async function discoverChangedPackageJsonPaths(
  */
 export async function extractBump(
   options: ExtractBumpOptions,
-): Promise<Bump | Unsupported> {
+): Promise<Bump | CrossFileBump | Unsupported> {
   const filesToCheck = options.packageJsonPath
     ? [options.packageJsonPath]
     : await discoverChangedPackageJsonPaths(options.repoDir, options.baseRef, options.headRef);
@@ -214,6 +232,7 @@ export async function extractBump(
 
   const distinctFiles = new Set(bumps.map((b) => b.packageJsonPath));
   const distinctToVersions = new Set(bumps.map((b) => b.toVersion));
+  const distinctNames = new Set(bumps.map((b) => b.name));
 
   if (distinctFiles.size === 1 && distinctToVersions.size === 1) {
     // Deterministic primary selection (sorted by name), not insertion
@@ -224,6 +243,15 @@ export async function extractBump(
     return { ...primary!, group: companions.map((c) => c.name) };
   }
 
+  // The SAME package, SAME target version, one bump per distinct file —
+  // e.g. @nestjs/core -> 11.2.3 in both apps/gateway and apps/notifier.
+  // Requires exactly one bump per file: a file that ALSO has its own
+  // internal multi-package group combined with cross-file duplication is
+  // too compound a shape for v1 and stays Unsupported below.
+  if (distinctNames.size === 1 && distinctToVersions.size === 1 && bumps.length === distinctFiles.size) {
+    return { kind: "cross-file", name: bumps[0]!.name, toVersion: bumps[0]!.toVersion, bumps };
+  }
+
   const reason =
     distinctFiles.size > 1
       ? `Grouped update: ${bumps.length} packages bumped across ${distinctFiles.size} package.json files in one PR`
@@ -232,6 +260,14 @@ export async function extractBump(
   return { kind: "unsupported", reason, bumps };
 }
 
-export function isUnsupported(result: Bump | Unsupported): result is Unsupported {
+export function isUnsupported(
+  result: Bump | CrossFileBump | Unsupported,
+): result is Unsupported {
   return "kind" in result && result.kind === "unsupported";
+}
+
+export function isCrossFileBump(
+  result: Bump | CrossFileBump | Unsupported,
+): result is CrossFileBump {
+  return "kind" in result && result.kind === "cross-file";
 }

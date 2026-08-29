@@ -1,7 +1,14 @@
 import path from "node:path";
 
-import { extractBump, isUnsupported, type Bump, type Unsupported } from "./extractBump.js";
-import { prepareWorkspace } from "./prepareWorkspace.js";
+import {
+  extractBump,
+  isUnsupported,
+  isCrossFileBump,
+  type Bump,
+  type CrossFileBump,
+  type Unsupported,
+} from "./extractBump.js";
+import { prepareWorkspace, type Workspace } from "./prepareWorkspace.js";
 import { runCompat } from "./runCompat.js";
 import { runApiDiff } from "./runApiDiff.js";
 import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
@@ -70,11 +77,22 @@ export interface RunGithubPipelineOptions {
   brain?: Brain | undefined;
 }
 
+/** One package.json's outcome within a cross-file bump (see extractBump.ts's CrossFileBump). */
+export type CompatStepResult =
+  | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
+  | { kind: "verdict"; verdict: Verdict };
+
 export type RunGithubPipelineResult =
   | { status: "skipped-actor"; actor: string }
   | { status: "unsupported-bump"; bump: Unsupported }
   | { status: "static-incompatible"; bump: Bump; apiDiff: ApiDiffReport }
-  | { status: "verdict"; bump: Bump; verdict: Verdict; merged: boolean };
+  | { status: "verdict"; bump: Bump; verdict: Verdict; merged: boolean }
+  | {
+      status: "cross-file-verdict";
+      bump: CrossFileBump;
+      results: Array<{ bump: Bump; step: CompatStepResult }>;
+      merged: boolean;
+    };
 
 /** Exported so main.ts can decide whether to fail the Action step itself using the same mapping as the check run conclusion, instead of duplicating the switch. */
 export function checkConclusionFor(verdict: Verdict): CheckConclusion {
@@ -93,9 +111,88 @@ export function checkConclusionFor(verdict: Verdict): CheckConclusion {
   }
 }
 
+/** Worst-of-all: any single failing step fails the whole cross-file result; a step-level conclusion is only as good as its weakest member. */
+function checkConclusionForStep(step: CompatStepResult): CheckConclusion {
+  return step.kind === "static-incompatible" ? "failure" : checkConclusionFor(step.verdict);
+}
+
+function worstConclusion(conclusions: CheckConclusion[]): CheckConclusion {
+  if (conclusions.includes("failure")) return "failure";
+  if (conclusions.includes("neutral")) return "neutral";
+  return "success";
+}
+
 function checkTitleFor(verdict: Verdict, bump: Bump): string {
   const groupSuffix = bump.group && bump.group.length > 0 ? ` (+${bump.group.length} grouped)` : "";
   return `${bump.name}${groupSuffix} ${bump.fromVersion} → ${bump.toVersion}: ${verdict.kind}`;
+}
+
+/**
+ * The static-prefilter-then-compat logic for ONE bump against an already-
+ * prepared app directory. Pulled out of runGithubPipeline so a cross-file
+ * bump (the SAME package bumped in multiple independent apps — see
+ * extractBump.ts's CrossFileBump) can run this once per affected app
+ * within a single shared workspace checkout, instead of duplicating the
+ * whole prepareWorkspace-through-interpret sequence per app.
+ */
+async function runCompatStep(
+  appDir: string,
+  bump: Bump,
+  testCommand: string,
+): Promise<CompatStepResult> {
+  // Static, no install — cheap enough to always run first. Only skips the
+  // expensive sandboxed compat run on a CONFIDENT negative: a symbol the
+  // app statically imports is missing from the candidate's exports, AND no
+  // dynamic/namespace usage exists that could have hidden the real export
+  // list (hasDynamicUsage true, or a tri-state null apiCompatible, both
+  // fall through to the real compat run unchanged — see
+  // docs/architecture.md). Skipped entirely for a grouped bump: api-diff
+  // has no --group equivalent, and checking only the primary package's
+  // static usage in isolation doesn't represent what the PR actually
+  // changed (its companions).
+  if (!bump.group) {
+    const apiDiffResult = await runApiDiff({
+      appDir,
+      packageName: bump.name,
+      toVersion: bump.toVersion,
+    });
+    const candidateEntry = apiDiffResult.report.versions.find((v) => v.version === bump.toVersion);
+    const confidentNegative =
+      candidateEntry?.apiCompatible === false && !apiDiffResult.report.hasDynamicUsage;
+    if (confidentNegative) {
+      return { kind: "static-incompatible", apiDiff: apiDiffResult.report };
+    }
+  }
+
+  const result = await runCompat({
+    appDir,
+    packageName: bump.name,
+    versions: [bump.toVersion],
+    testCommand,
+    extraArgs: [
+      // Duplicate-copy regressions (DI singletons, instanceof checks) are a
+      // real, distinct failure mode from an incompatible API —
+      // --check-dupes surfaces them as dupesRegression on the report
+      // (already rendered verbatim by report.ts). --seed-lockfile is
+      // required for accurate nested-fork detection: a fresh solve
+      // re-flattens away duplicates a real install would keep. Costs
+      // nothing extra: dupes are checked against installs compat already
+      // performs.
+      "--check-dupes",
+      "--seed-lockfile",
+      // A grouped bump (same file, same target version — see
+      // extractBump.ts) pins its companions to bump.toVersion too, so the
+      // sandbox actually reflects what the PR changed instead of testing
+      // the primary alone while its peers silently stay old.
+      ...(bump.group && bump.group.length > 0 ? ["--group", bump.group.join(",")] : []),
+    ],
+  });
+  return { kind: "verdict", verdict: interpret(result.report, result.exitCode) };
+}
+
+/** Renders one CompatStepResult's body — shared between the single-bump and cross-file-per-app comment paths. */
+function renderStep(step: CompatStepResult, bump: Bump): string {
+  return step.kind === "static-incompatible" ? renderStaticIncompatible(bump, step.apiDiff) : render(step.verdict);
 }
 
 /**
@@ -112,31 +209,92 @@ export async function runGithubPipeline(
     return { status: "skipped-actor", actor: options.actor };
   }
 
-  const bump = await extractBump({
+  const bumpResult = await extractBump({
     repoDir: options.repoDir,
     baseRef: options.baseRef,
     headRef: options.headRef,
     ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
   });
 
-  if (isUnsupported(bump)) {
+  if (isUnsupported(bumpResult)) {
     const body =
-      bump.bumps.length > 0
-        ? `${COMMENT_MARKER}\n### packdev compat — ⏭️ Skipped\n\n${bump.reason}: ${bump.bumps
+      bumpResult.bumps.length > 0
+        ? `${COMMENT_MARKER}\n### packdev compat — ⏭️ Skipped\n\n${bumpResult.reason}: ${bumpResult.bumps
             .map((b) => `\`${b.name}\` ${b.fromVersion} → ${b.toVersion}`)
             .join(", ")}.\n\nNot supported in v1 — this PR bumps more than one package, and guessing which one to test would produce a verdict that doesn't answer the PR.`
-        : `${COMMENT_MARKER}\n### packdev compat — ⏭️ Skipped\n\n${bump.reason}.`;
+        : `${COMMENT_MARKER}\n### packdev compat — ⏭️ Skipped\n\n${bumpResult.reason}.`;
 
     await options.github.upsertComment({ marker: COMMENT_MARKER, body });
     await options.github.createCheckRun({
       name: "packdev compat",
       conclusion: "neutral",
       title: "Skipped — unsupported bump shape",
-      summary: bump.reason,
+      summary: bumpResult.reason,
     });
 
-    return { status: "unsupported-bump", bump };
+    return { status: "unsupported-bump", bump: bumpResult };
   }
+
+  if (isCrossFileBump(bumpResult)) {
+    // One shared checkout serves every affected app: prepareWorkspace
+    // always installs from the whole repo root regardless of which
+    // packageJsonPath is passed (see prepareWorkspace.ts) — it only uses
+    // that path for package-manager detection — so there is no need to
+    // check out once per app.
+    const workspace = await prepareWorkspace({
+      repoDir: options.repoDir,
+      baseRef: options.baseRef,
+      packageJsonPath: bumpResult.bumps[0]!.packageJsonPath,
+    });
+
+    let results: Array<{ bump: Bump; step: CompatStepResult }>;
+    try {
+      results = await Promise.all(
+        bumpResult.bumps.map(async (bump) => {
+          const appDir = path.join(workspace.dir, path.dirname(bump.packageJsonPath));
+          const step = await runCompatStep(appDir, bump, options.testCommand);
+          return { bump, step };
+        }),
+      );
+    } finally {
+      await workspace.cleanup();
+    }
+
+    const lines: string[] = [
+      `### packdev compat — ${bumpResult.name} \`${bumpResult.toVersion}\` bumped across ${results.length} apps`,
+      "",
+    ];
+    for (const { bump, step } of results) {
+      lines.push(`#### \`${bump.packageJsonPath}\` (\`${bump.fromVersion}\` → \`${bump.toVersion}\`)`);
+      lines.push("");
+      lines.push(renderStep(step, bump));
+      lines.push("");
+    }
+    const body = `${COMMENT_MARKER}\n${lines.join("\n")}`;
+
+    await options.github.upsertComment({ marker: COMMENT_MARKER, body });
+    const conclusion = worstConclusion(results.map((r) => checkConclusionForStep(r.step)));
+    await options.github.createCheckRun({
+      name: "packdev compat",
+      conclusion,
+      title: `${bumpResult.name} ${bumpResult.toVersion}: ${results.length} apps, ${conclusion}`,
+      summary: body,
+    });
+
+    // Only auto-merge when EVERY affected app genuinely PASSED — one app
+    // silently staying broken is not an acceptable bar just because
+    // another app happened to pass.
+    const allPassed = results.every((r) => r.step.kind === "verdict" && isAutoMergeEligible(r.step.verdict));
+    let merged = false;
+    if (options.autoMerge && allPassed) {
+      await options.github.mergePullRequest();
+      merged = true;
+    }
+
+    return { status: "cross-file-verdict", bump: bumpResult, results, merged };
+  }
+
+  const bump = bumpResult;
 
   const workspace = await prepareWorkspace({
     repoDir: options.repoDir,
@@ -157,67 +315,9 @@ export async function runGithubPipeline(
   // have been omitted entirely and left to auto-discovery).
   const appDir = path.join(workspace.dir, path.dirname(bump.packageJsonPath));
 
-  type CompatStepResult =
-    | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
-    | { kind: "verdict"; verdict: Verdict };
-
   let stepResult: CompatStepResult;
   try {
-    // Static, no install — cheap enough to always run first. Only skips
-    // the expensive sandboxed compat run on a CONFIDENT negative: a symbol
-    // the app statically imports is missing from the candidate's exports,
-    // AND no dynamic/namespace usage exists that could have hidden the
-    // real export list (hasDynamicUsage true, or a tri-state null
-    // apiCompatible, both fall through to the real compat run unchanged —
-    // see docs/architecture.md). Skipped entirely for a grouped bump:
-    // api-diff has no --group equivalent, and checking only the primary
-    // package's static usage in isolation doesn't represent what the PR
-    // actually changed (its companions).
-    let staticIncompatibleReport: ApiDiffReport | null = null;
-    if (!bump.group) {
-      const apiDiffResult = await runApiDiff({
-        appDir,
-        packageName: bump.name,
-        toVersion: bump.toVersion,
-      });
-      const candidateEntry = apiDiffResult.report.versions.find(
-        (v) => v.version === bump.toVersion,
-      );
-      const confidentNegative =
-        candidateEntry?.apiCompatible === false && !apiDiffResult.report.hasDynamicUsage;
-      if (confidentNegative) {
-        staticIncompatibleReport = apiDiffResult.report;
-      }
-    }
-
-    if (staticIncompatibleReport) {
-      stepResult = { kind: "static-incompatible", apiDiff: staticIncompatibleReport };
-    } else {
-      const result = await runCompat({
-        appDir,
-        packageName: bump.name,
-        versions: [bump.toVersion],
-        testCommand: options.testCommand,
-        extraArgs: [
-          // Duplicate-copy regressions (DI singletons, instanceof checks) are
-          // a real, distinct failure mode from an incompatible API —
-          // --check-dupes surfaces them as dupesRegression on the report
-          // (already rendered verbatim by report.ts). --seed-lockfile is
-          // required for accurate nested-fork detection: a fresh solve
-          // re-flattens away duplicates a real install would keep. Costs
-          // nothing extra: dupes are checked against installs compat already
-          // performs.
-          "--check-dupes",
-          "--seed-lockfile",
-          // A grouped bump (same file, same target version — see
-          // extractBump.ts) pins its companions to bump.toVersion too, so
-          // the sandbox actually reflects what the PR changed instead of
-          // testing the primary alone while its peers silently stay old.
-          ...(bump.group && bump.group.length > 0 ? ["--group", bump.group.join(",")] : []),
-        ],
-      });
-      stepResult = { kind: "verdict", verdict: interpret(result.report, result.exitCode) };
-    }
+    stepResult = await runCompatStep(appDir, bump, options.testCommand);
   } finally {
     await workspace.cleanup();
   }

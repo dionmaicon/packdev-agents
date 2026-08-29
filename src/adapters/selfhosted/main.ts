@@ -91,6 +91,14 @@ async function runOnce(): Promise<void> {
         `PR #${pr.number}: static incompatible — ${prResult.bump.name} ` +
           `${prResult.bump.fromVersion} → ${prResult.bump.toVersion} (packdev api-diff, skipped compat)`,
       );
+    } else if (prResult.status === "cross-file-verdict") {
+      const kinds = prResult.results
+        .map((r) => (r.step.kind === "static-incompatible" ? "STATIC_INCOMPATIBLE" : r.step.verdict.kind))
+        .join(", ");
+      console.log(
+        `PR #${pr.number}: cross-file — ${prResult.bump.name} ${prResult.bump.toVersion} across ` +
+          `${prResult.results.length} apps [${kinds}] (merged: ${prResult.merged})`,
+      );
     }
   }
   if (result.skippedAlreadySeen.length > 0) {
