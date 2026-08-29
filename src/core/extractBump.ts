@@ -19,6 +19,20 @@ export interface Bump {
   section: DependencySection;
   /** Which package.json this bump was found in, relative to repoDir. */
   packageJsonPath: string;
+  /**
+   * Other packages this PR bumped ALONGSIDE this one, in the same
+   * package.json, all landing on the exact same toVersion (Dependabot's
+   * "grouped update" for a version-locked family, e.g. every @nestjs/*
+   * package moving together) — passed to `packdev compat --group` so the
+   * sandbox pins them to match rather than testing this package in
+   * isolation while its peers silently stay on the old version, which is
+   * NOT what the PR actually does. Undefined for an ordinary single-package
+   * bump. A grouped bump with DIFFERING target versions across packages
+   * can't be expressed this way (packdev's --group pins companions to the
+   * SAME version string as the primary, not to their own independent
+   * target) and stays Unsupported — see extractBump()'s doc comment.
+   */
+  group?: string[];
 }
 
 export interface Unsupported {
@@ -159,11 +173,16 @@ async function discoverChangedPackageJsonPaths(
  * bot-formatted and varies across Dependabot/Renovate, ecosystem, and
  * grouped-update configuration.
  *
- * Returns Unsupported when zero or more than one dependency's version
- * changed (whether within one file or spread across several — a monorepo
- * with multiple independently-tracked workspace members can have either):
- * a grouped update bumps several packages in one PR, and guessing which one
- * to test would produce a verdict that doesn't answer the PR.
+ * Returns Unsupported when zero dependencies changed, or when more than one
+ * changed in a way that can't be expressed as one packdev compat run:
+ * spread across more than one package.json (a monorepo can have this), or
+ * within one file but landing on DIFFERING target versions (packdev's
+ * `--group` can only pin companions to the SAME version as the primary
+ * being tested — see the Bump.group doc comment). A same-file, same-target-
+ * version grouped bump (Dependabot's "grouped update" for a version-locked
+ * family, e.g. every @nestjs/* package moving to the same release together)
+ * IS supported: one bump is picked as the primary and the rest become its
+ * `group`.
  */
 export async function extractBump(
   options: ExtractBumpOptions,
@@ -189,15 +208,28 @@ export async function extractBump(
     };
   }
 
-  if (bumps.length > 1) {
-    return {
-      kind: "unsupported",
-      reason: `Grouped update: ${bumps.length} packages bumped in one PR`,
-      bumps,
-    };
+  if (bumps.length === 1) {
+    return bumps[0]!;
   }
 
-  return bumps[0]!;
+  const distinctFiles = new Set(bumps.map((b) => b.packageJsonPath));
+  const distinctToVersions = new Set(bumps.map((b) => b.toVersion));
+
+  if (distinctFiles.size === 1 && distinctToVersions.size === 1) {
+    // Deterministic primary selection (sorted by name), not insertion
+    // order, so the same PR always resolves to the same primary/group
+    // split regardless of how package.json happened to list its deps.
+    const sorted = [...bumps].sort((a, b) => a.name.localeCompare(b.name));
+    const [primary, ...companions] = sorted;
+    return { ...primary!, group: companions.map((c) => c.name) };
+  }
+
+  const reason =
+    distinctFiles.size > 1
+      ? `Grouped update: ${bumps.length} packages bumped across ${distinctFiles.size} package.json files in one PR`
+      : `Grouped update: ${bumps.length} packages bumped to DIFFERING target versions in one PR — ` +
+        "packdev's --group can only pin companions to the same version as the primary being tested";
+  return { kind: "unsupported", reason, bumps };
 }
 
 export function isUnsupported(result: Bump | Unsupported): result is Unsupported {

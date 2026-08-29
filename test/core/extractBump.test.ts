@@ -74,7 +74,7 @@ test("extractBump: single dependency version bump", async () => {
   }
 });
 
-test("extractBump: grouped bump returns Unsupported with all bumps listed", async () => {
+test("extractBump: grouped bump with DIFFERING target versions returns Unsupported with all bumps listed", async () => {
   const repoDir = await makeRepo();
   try {
     await writePackageJson(repoDir, {
@@ -100,6 +100,52 @@ test("extractBump: grouped bump returns Unsupported with all bumps listed", asyn
     if (isUnsupported(result)) {
       assert.equal(result.bumps.length, 2);
       assert.match(result.reason, /Grouped update/);
+      assert.match(result.reason, /DIFFERING target versions/);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: grouped bump with the SAME target version is supported — one primary, the rest become group", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: {
+        "@nestjs/core": "11.0.0",
+        "@nestjs/common": "11.0.0",
+        "@nestjs/platform-express": "11.0.0",
+      },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: {
+        "@nestjs/core": "11.2.3",
+        "@nestjs/common": "11.2.3",
+        "@nestjs/platform-express": "11.2.3",
+      },
+    });
+    await commit(repoDir, "grouped bump, same target version");
+
+    const result = await extractBump({
+      repoDir,
+      baseRef: "base",
+      headRef: "HEAD",
+    });
+
+    assert.equal(isUnsupported(result), false);
+    if (!isUnsupported(result)) {
+      // Deterministic primary selection: sorted by name, not insertion
+      // order — @nestjs/common sorts before @nestjs/core and
+      // @nestjs/platform-express.
+      assert.equal(result.name, "@nestjs/common");
+      assert.equal(result.fromVersion, "11.0.0");
+      assert.equal(result.toVersion, "11.2.3");
+      assert.deepEqual(result.group, ["@nestjs/core", "@nestjs/platform-express"]);
     }
   } finally {
     await rm(repoDir, { recursive: true, force: true });

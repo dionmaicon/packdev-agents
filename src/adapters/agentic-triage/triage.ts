@@ -44,10 +44,19 @@ function buildSystemPrompt(): string {
 }
 
 function buildUserPrompt(bump: Bump): string {
+  const groupNote =
+    bump.group && bump.group.length > 0
+      ? ` This PR bumps ${bump.name} together with ${bump.group.join(", ")} — all to the exact ` +
+        `same target version (${bump.toVersion}), a version-locked family moving as a group. ` +
+        `When you call the "compat" tool, pass "group": [${bump.group.map((n) => `"${n}"`).join(", ")}] ` +
+        "so the sandbox pins them together too, matching what this PR actually changes — testing " +
+        `${bump.name} in isolation while its group silently stays on the old version would not ` +
+        "answer this PR."
+      : "";
   return (
     `Triage this bump: **${bump.name}** \`${bump.fromVersion}\` → \`${bump.toVersion}\` ` +
-    `(${bump.section}, ${bump.packageJsonPath}). Investigate using the available tools and ` +
-    "report your findings."
+    `(${bump.section}, ${bump.packageJsonPath}).${groupNote} Investigate using the available ` +
+    "tools and report your findings."
   );
 }
 

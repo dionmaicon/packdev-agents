@@ -36,7 +36,12 @@ function bumpSummary(verdict: Verdict): string {
   const candidates = candidatesOf(verdict.report);
   const from = control ? `\`${control.version}\`` : "*(unresolved)*";
   const to = candidates.length > 0 ? versionsList(candidates) : "*(none tested)*";
-  return `**${verdict.report.package}**: ${from} → ${to}`;
+  const group = verdict.report.group;
+  const groupNote =
+    group && group.length > 0
+      ? ` (grouped with ${group.map((name) => `\`${name}\``).join(", ")}, pinned to the same version)`
+      : "";
+  return `**${verdict.report.package}**${groupNote}: ${from} → ${to}`;
 }
 
 /**

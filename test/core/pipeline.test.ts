@@ -720,3 +720,57 @@ test(
     }
   },
 );
+
+test(
+  "runGithubPipeline: grouped bump with the SAME target version — pins companions via --group, real PASSED verdict against a real @nestjs/* family bump",
+  { timeout: 60_000 },
+  async () => {
+    const { repoDir, cleanup } = await makeRepo(
+      {
+        "@nestjs/core": "11.0.0",
+        "@nestjs/common": "11.0.0",
+        "@nestjs/platform-express": "11.0.0",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.8.2",
+      },
+      {
+        "@nestjs/core": "11.2.3",
+        "@nestjs/common": "11.2.3",
+        "@nestjs/platform-express": "11.2.3",
+        "reflect-metadata": "^0.2.2",
+        rxjs: "^7.8.2",
+      },
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "require(\'reflect-metadata\'); const { Module } = require(\'@nestjs/common\'); const { NestFactory } = require(\'@nestjs/core\'); if (typeof Module !== \'function\' || typeof NestFactory !== \'object\') process.exit(1)"',
+        github,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        // Deterministic primary selection (sorted by name) — see extractBump.ts.
+        assert.equal(result.bump.name, "@nestjs/common");
+        assert.deepEqual(result.bump.group, ["@nestjs/core", "@nestjs/platform-express"]);
+        assert.equal(result.verdict.kind, "PASSED");
+        // Confirms packdev's own report carries the group back — this is
+        // proof --group was actually passed and honored, not just that our
+        // own bump-detection logic worked.
+        assert.deepEqual(result.verdict.report.group, ["@nestjs/core", "@nestjs/platform-express"]);
+      }
+
+      assert.equal(github.comments.length, 1);
+      assert.match(github.comments[0]!.body, /grouped with .@nestjs\/core., .@nestjs\/platform-express./);
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+    } finally {
+      await cleanup();
+    }
+  },
+);
+

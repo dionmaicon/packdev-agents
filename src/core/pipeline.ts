@@ -94,7 +94,8 @@ export function checkConclusionFor(verdict: Verdict): CheckConclusion {
 }
 
 function checkTitleFor(verdict: Verdict, bump: Bump): string {
-  return `${bump.name} ${bump.fromVersion} → ${bump.toVersion}: ${verdict.kind}`;
+  const groupSuffix = bump.group && bump.group.length > 0 ? ` (+${bump.group.length} grouped)` : "";
+  return `${bump.name}${groupSuffix} ${bump.fromVersion} → ${bump.toVersion}: ${verdict.kind}`;
 }
 
 /**
@@ -168,34 +169,52 @@ export async function runGithubPipeline(
     // AND no dynamic/namespace usage exists that could have hidden the
     // real export list (hasDynamicUsage true, or a tri-state null
     // apiCompatible, both fall through to the real compat run unchanged —
-    // see docs/architecture.md).
-    const apiDiffResult = await runApiDiff({
-      appDir,
-      packageName: bump.name,
-      toVersion: bump.toVersion,
-    });
-    const candidateEntry = apiDiffResult.report.versions.find(
-      (v) => v.version === bump.toVersion,
-    );
-    const confidentNegative =
-      candidateEntry?.apiCompatible === false && !apiDiffResult.report.hasDynamicUsage;
+    // see docs/architecture.md). Skipped entirely for a grouped bump:
+    // api-diff has no --group equivalent, and checking only the primary
+    // package's static usage in isolation doesn't represent what the PR
+    // actually changed (its companions).
+    let staticIncompatibleReport: ApiDiffReport | null = null;
+    if (!bump.group) {
+      const apiDiffResult = await runApiDiff({
+        appDir,
+        packageName: bump.name,
+        toVersion: bump.toVersion,
+      });
+      const candidateEntry = apiDiffResult.report.versions.find(
+        (v) => v.version === bump.toVersion,
+      );
+      const confidentNegative =
+        candidateEntry?.apiCompatible === false && !apiDiffResult.report.hasDynamicUsage;
+      if (confidentNegative) {
+        staticIncompatibleReport = apiDiffResult.report;
+      }
+    }
 
-    if (confidentNegative) {
-      stepResult = { kind: "static-incompatible", apiDiff: apiDiffResult.report };
+    if (staticIncompatibleReport) {
+      stepResult = { kind: "static-incompatible", apiDiff: staticIncompatibleReport };
     } else {
       const result = await runCompat({
         appDir,
         packageName: bump.name,
         versions: [bump.toVersion],
         testCommand: options.testCommand,
-        // Duplicate-copy regressions (DI singletons, instanceof checks) are a
-        // real, distinct failure mode from an incompatible API — --check-dupes
-        // surfaces them as dupesRegression on the report (already rendered
-        // verbatim by report.ts). --seed-lockfile is required for accurate
-        // nested-fork detection: a fresh solve re-flattens away duplicates a
-        // real install would keep. Costs nothing extra: dupes are checked
-        // against installs compat already performs.
-        extraArgs: ["--check-dupes", "--seed-lockfile"],
+        extraArgs: [
+          // Duplicate-copy regressions (DI singletons, instanceof checks) are
+          // a real, distinct failure mode from an incompatible API —
+          // --check-dupes surfaces them as dupesRegression on the report
+          // (already rendered verbatim by report.ts). --seed-lockfile is
+          // required for accurate nested-fork detection: a fresh solve
+          // re-flattens away duplicates a real install would keep. Costs
+          // nothing extra: dupes are checked against installs compat already
+          // performs.
+          "--check-dupes",
+          "--seed-lockfile",
+          // A grouped bump (same file, same target version — see
+          // extractBump.ts) pins its companions to bump.toVersion too, so
+          // the sandbox actually reflects what the PR changed instead of
+          // testing the primary alone while its peers silently stay old.
+          ...(bump.group && bump.group.length > 0 ? ["--group", bump.group.join(",")] : []),
+        ],
       });
       stepResult = { kind: "verdict", verdict: interpret(result.report, result.exitCode) };
     }

@@ -159,10 +159,29 @@ explicit path can still be passed to pin scanning to one file, which is
 useful for narrowing scope in a repo with unrelated `package.json` churn
 elsewhere, but it's an override, not the default.
 
-Grouped bumps — more than one dependency version changed, whether within one
-file or spread across several files at once — return `Unsupported` in v1 and
-are reported as such, listing every bump found. Guessing which one to test
-would produce a verdict that does not answer the PR.
+Grouped bumps — more than one dependency version changed within a PR — are
+now supported for the common real case: Dependabot's own "grouped update"
+for a version-locked family (e.g. every `@nestjs/*` package moving to the
+same release together, real-world verified via a live PR on
+`packdev-demo-nestjs`). Detected as: multiple bumps found in the SAME
+`package.json`, ALL landing on the exact same `toVersion`. One bump is
+picked as the primary (deterministic, sorted by name — not insertion
+order), the rest become `Bump.group`, passed to `packdev compat --group`
+so the sandbox pins them together — testing the primary alone while its
+peers silently stayed on the old version would not answer the PR, and (see
+"The control problem" above) was the exact real bug this closes: an
+earlier real run bumping `@nestjs/core` alone, without its `@nestjs/common`
+peer, produced a genuine runtime break that a grouped test correctly
+avoids by construction.
+
+Still `Unsupported`, and reported as such listing every bump found: bumps
+spread across MORE THAN ONE `package.json` (a monorepo can have this), or
+bumps within one file landing on DIFFERING target versions — packdev's
+`--group` can only pin companions to the exact same version string as the
+primary being tested, not to their own independent target, so a
+heterogeneous grouped update genuinely can't be expressed as one compat
+run. Guessing which one to test in that case would produce a verdict that
+does not answer the PR.
 
 ### 2. `prepareWorkspace(baseRef) -> Workspace`
 
@@ -210,7 +229,9 @@ runs against installs `compat` already performs (no added cost), and
 `--seed-lockfile` is packdev's own recommended pairing for it — without it a
 fresh solve can re-flatten away exactly the nested-fork duplicate class
 `--check-dupes` exists to catch. `report.ts` already renders `dupesRegression`
-verbatim on any verdict kind that carries one. Relevant fields:
+verbatim on any verdict kind that carries one. Also passes `--group
+<names>` when `bump.group` is populated (see "core / extractBump" above) —
+pins those companions to the same candidate version being tested. Relevant fields:
 
 - `versions[]`: `{ version, status, exitCode, durationMs, output?,
   lockfileHash, dupeCounts?, dupesRegression?, esmMismatch?, consumers? }`
