@@ -19,10 +19,6 @@ export interface AgentToolCallLog {
 }
 
 export interface RunAgentLoopOptions {
-  apiKey: string;
-  model?: string;
-  baseUrl?: string;
-  maxOutputTokens?: number;
   systemPrompt: string;
   userPrompt: string;
   tools: AgentTool[];
@@ -38,6 +34,24 @@ export interface RunAgentLoopResult {
   toolCalls: AgentToolCallLog[];
   turns: number;
 }
+
+/**
+ * One backend that can drive a real tool-use loop. Deliberately the same
+ * shape as core/brain.ts's `Brain` interface (one method, multiple factory
+ * functions per backend) — see createAnthropicAgentLoop /
+ * createOpenAiCompatibleAgentLoop below. This is the ONLY place in the
+ * repo where a model gets to decide what to DO next (which tool, with what
+ * arguments), not just what to SAY — see docs/architecture.md "Agentic
+ * triage (experimental)". Kept out of the core pipeline entirely:
+ * interpret()'s Verdict, and everything auto-merge eligibility is computed
+ * from, still comes only from a real, deterministic packdev compat run no
+ * model controls.
+ */
+export interface AgentLoop {
+  run(options: RunAgentLoopOptions): Promise<RunAgentLoopResult>;
+}
+
+// --- Anthropic Messages API backend ---
 
 interface AnthropicTextBlock {
   type: "text";
@@ -63,101 +77,229 @@ interface AnthropicResponse {
   stop_reason?: string;
 }
 
+export interface AnthropicAgentLoopConfig {
+  apiKey: string;
+  model?: string;
+  baseUrl?: string;
+  maxOutputTokens?: number;
+}
+
 /**
- * Drives a real Anthropic Messages API tool-use loop: send the prompt with
- * the given tools, execute whatever tool_use blocks come back via
- * executeTool, feed the results back as tool_result blocks, repeat until
- * the model stops asking for tools (stop_reason !== "tool_use") or
- * maxTurns is hit. Uses raw fetch, matching brain.ts's existing pattern —
- * no Anthropic SDK dependency.
- *
- * This is the ONLY place in the repo where a model gets to decide what to
- * DO next (which tool, with what arguments), not just what to SAY — see
- * docs/architecture.md "Agentic triage (experimental)". It is deliberately
- * kept out of the core pipeline: interpret()'s Verdict, and everything
- * auto-merge eligibility is computed from, still comes only from a real,
- * deterministic packdev compat run the model doesn't control.
+ * Hosted Anthropic Messages API. Uses raw fetch, matching brain.ts's
+ * existing convention — no Anthropic SDK dependency.
  */
-export async function runAgentLoop(
-  options: RunAgentLoopOptions,
-): Promise<RunAgentLoopResult> {
-  const baseUrl = options.baseUrl ?? "https://api.anthropic.com";
-  const model = options.model ?? "claude-sonnet-5";
-  const maxTurns = options.maxTurns ?? 10;
+export function createAnthropicAgentLoop(config: AnthropicAgentLoopConfig): AgentLoop {
+  const baseUrl = config.baseUrl ?? "https://api.anthropic.com";
+  const model = config.model ?? "claude-sonnet-5";
 
-  const anthropicTools = options.tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema,
-  }));
+  return {
+    async run(options: RunAgentLoopOptions): Promise<RunAgentLoopResult> {
+      const maxTurns = options.maxTurns ?? 10;
+      const tools = options.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.inputSchema,
+      }));
 
-  const messages: AnthropicMessage[] = [{ role: "user", content: options.userPrompt }];
-  const toolCalls: AgentToolCallLog[] = [];
+      const messages: AnthropicMessage[] = [{ role: "user", content: options.userPrompt }];
+      const toolCalls: AgentToolCallLog[] = [];
 
-  for (let turn = 1; turn <= maxTurns; turn++) {
-    const response = await fetch(`${baseUrl}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": options.apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: options.maxOutputTokens ?? 2000,
-        system: options.systemPrompt,
-        tools: anthropicTools,
-        messages,
-      }),
-    });
+      for (let turn = 1; turn <= maxTurns; turn++) {
+        const response = await fetch(`${baseUrl}/v1/messages`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": config.apiKey,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: config.maxOutputTokens ?? 2000,
+            system: options.systemPrompt,
+            tools,
+            messages,
+          }),
+        });
 
-    if (!response.ok) {
-      throw new Error(`Anthropic API error ${response.status}: ${await response.text()}`);
-    }
+        if (!response.ok) {
+          throw new Error(`Anthropic API error ${response.status}: ${await response.text()}`);
+        }
 
-    const body = (await response.json()) as AnthropicResponse;
-    const toolUseBlocks = body.content.filter(
-      (block): block is AnthropicToolUseBlock => block.type === "tool_use",
-    );
-
-    if (body.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
-      const text = body.content
-        .filter((block): block is AnthropicTextBlock => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-      if (!text) {
-        throw new Error(
-          `Anthropic response had no text content and stop_reason "${body.stop_reason}" wasn't "tool_use"`,
+        const body = (await response.json()) as AnthropicResponse;
+        const toolUseBlocks = body.content.filter(
+          (block): block is AnthropicToolUseBlock => block.type === "tool_use",
         );
+
+        if (body.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
+          const text = body.content
+            .filter((block): block is AnthropicTextBlock => block.type === "text")
+            .map((block) => block.text)
+            .join("\n")
+            .trim();
+          if (!text) {
+            throw new Error(
+              `Anthropic response had no text content and stop_reason "${body.stop_reason}" wasn't "tool_use"`,
+            );
+          }
+          return { report: text, toolCalls, turns: turn };
+        }
+
+        messages.push({ role: "assistant", content: body.content });
+
+        const toolResults: AnthropicContentBlock[] = [];
+        for (const block of toolUseBlocks) {
+          let text: string;
+          let isError: boolean;
+          try {
+            const result = await options.executeTool({ name: block.name, input: block.input });
+            text = result.text;
+            isError = result.isError;
+          } catch (error) {
+            text = error instanceof Error ? error.message : String(error);
+            isError = true;
+          }
+          toolCalls.push({ name: block.name, input: block.input, result: text, isError });
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: text,
+            ...(isError ? { is_error: true } : {}),
+          } as AnthropicContentBlock);
+        }
+        messages.push({ role: "user", content: toolResults });
       }
-      return { report: text, toolCalls, turns: turn };
-    }
 
-    messages.push({ role: "assistant", content: body.content });
+      throw new Error(`Agent loop exceeded maxTurns (${maxTurns}) without a final text response`);
+    },
+  };
+}
 
-    const toolResults: AnthropicContentBlock[] = [];
-    for (const block of toolUseBlocks) {
-      let text: string;
-      let isError: boolean;
-      try {
-        const result = await options.executeTool({ name: block.name, input: block.input });
-        text = result.text;
-        isError = result.isError;
-      } catch (error) {
-        text = error instanceof Error ? error.message : String(error);
-        isError = true;
+// --- OpenAI-compatible chat/completions backend ---
+// Covers hosted OpenAI, Z.ai's GLM Coding Plan endpoint
+// (https://api.z.ai/api/coding/paas/v4), and any local OpenAI-compatible
+// endpoint (Ollama, vLLM). Genuinely different wire format from Anthropic's
+// — not just pointed at a compatibility shim: tools nest under
+// {type:"function", function:{...}}, tool calls come back as
+// message.tool_calls[] with arguments as a JSON string (not an object),
+// and tool results are separate role:"tool" messages keyed by
+// tool_call_id, not content blocks inside a role:"user" message.
+
+interface OpenAiToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+interface OpenAiMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content?: string | null;
+  tool_calls?: OpenAiToolCall[];
+  tool_call_id?: string;
+}
+
+interface OpenAiChatCompletionResponse {
+  choices: Array<{
+    message: OpenAiMessage;
+    finish_reason?: string;
+  }>;
+}
+
+export interface OpenAiCompatibleAgentLoopConfig {
+  /** e.g. https://api.z.ai/api/coding/paas/v4, https://api.openai.com/v1, http://localhost:11434/v1 (Ollama) */
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  maxOutputTokens?: number;
+}
+
+export function createOpenAiCompatibleAgentLoop(config: OpenAiCompatibleAgentLoopConfig): AgentLoop {
+  return {
+    async run(options: RunAgentLoopOptions): Promise<RunAgentLoopResult> {
+      const maxTurns = options.maxTurns ?? 10;
+      const tools = options.tools.map((tool) => ({
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      }));
+
+      const messages: OpenAiMessage[] = [
+        { role: "system", content: options.systemPrompt },
+        { role: "user", content: options.userPrompt },
+      ];
+      const toolCalls: AgentToolCallLog[] = [];
+
+      for (let turn = 1; turn <= maxTurns; turn++) {
+        const response = await fetch(`${config.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
+          },
+          body: JSON.stringify({
+            model: config.model,
+            max_tokens: config.maxOutputTokens ?? 2000,
+            tools,
+            messages,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `OpenAI-compatible API error ${response.status}: ${await response.text()}`,
+          );
+        }
+
+        const body = (await response.json()) as OpenAiChatCompletionResponse;
+        const choice = body.choices[0];
+        if (!choice) {
+          throw new Error("OpenAI-compatible response had no choices[0]");
+        }
+        const message = choice.message;
+        const requestedToolCalls = message.tool_calls ?? [];
+
+        if (requestedToolCalls.length === 0) {
+          const text = (message.content ?? "").trim();
+          if (!text) {
+            throw new Error(
+              `OpenAI-compatible response had no message content and no tool_calls ` +
+                `(finish_reason: "${choice.finish_reason}")`,
+            );
+          }
+          return { report: text, toolCalls, turns: turn };
+        }
+
+        messages.push(message);
+
+        for (const call of requestedToolCalls) {
+          let input: Record<string, unknown>;
+          try {
+            input = JSON.parse(call.function.arguments) as Record<string, unknown>;
+          } catch (error) {
+            throw new Error(
+              `OpenAI-compatible tool call "${call.function.name}" had unparseable arguments: ` +
+                `${call.function.arguments} (${String(error)})`,
+            );
+          }
+
+          let text: string;
+          let isError: boolean;
+          try {
+            const result = await options.executeTool({ name: call.function.name, input });
+            text = result.text;
+            isError = result.isError;
+          } catch (error) {
+            text = error instanceof Error ? error.message : String(error);
+            isError = true;
+          }
+          toolCalls.push({ name: call.function.name, input, result: text, isError });
+          messages.push({ role: "tool", tool_call_id: call.id, content: text });
+        }
       }
-      toolCalls.push({ name: block.name, input: block.input, result: text, isError });
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: text,
-        ...(isError ? { is_error: true } : {}),
-      } as AnthropicContentBlock);
-    }
-    messages.push({ role: "user", content: toolResults });
-  }
 
-  throw new Error(`Agent loop exceeded maxTurns (${maxTurns}) without a final text response`);
+      throw new Error(`Agent loop exceeded maxTurns (${maxTurns}) without a final text response`);
+    },
+  };
 }

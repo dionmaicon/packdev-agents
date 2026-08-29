@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { runAgentLoop, type AgentTool } from "../../../src/adapters/agentic-triage/agentLoop.ts";
+import {
+  createAnthropicAgentLoop,
+  createOpenAiCompatibleAgentLoop,
+  type AgentTool,
+} from "../../../src/adapters/agentic-triage/agentLoop.ts";
 
 async function withFakeServer(
   handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void,
@@ -43,7 +47,9 @@ const fakeTool: AgentTool = {
   inputSchema: { type: "object", properties: { package: { type: "string" } }, required: ["package"] },
 };
 
-test("runAgentLoop: single tool_use turn then a final text response — executes the tool, feeds the result back, returns the report", async () => {
+// --- Anthropic backend ---
+
+test("createAnthropicAgentLoop: single tool_use turn then a final text response — executes the tool, feeds the result back, returns the report", async () => {
   const { handler, requestBodies } = scriptedServer([
     {
       stop_reason: "tool_use",
@@ -60,9 +66,8 @@ test("runAgentLoop: single tool_use turn then a final text response — executes
 
   await withFakeServer(handler, async (baseUrl) => {
     const executed: Array<{ name: string; input: Record<string, unknown> }> = [];
-    const result = await runAgentLoop({
-      apiKey: "test-key",
-      baseUrl,
+    const agentLoop = createAnthropicAgentLoop({ apiKey: "test-key", baseUrl });
+    const result = await agentLoop.run({
       systemPrompt: "You are triaging a dependency bump.",
       userPrompt: "Investigate the bump.",
       tools: [fakeTool],
@@ -93,15 +98,14 @@ test("runAgentLoop: single tool_use turn then a final text response — executes
   });
 });
 
-test("runAgentLoop: no tool_use on the first turn returns the text immediately, zero tool calls", async () => {
+test("createAnthropicAgentLoop: no tool_use on the first turn returns the text immediately, zero tool calls", async () => {
   const { handler } = scriptedServer([
     { stop_reason: "end_turn", content: [{ type: "text", text: "Nothing to check, skipping." }] },
   ]);
 
   await withFakeServer(handler, async (baseUrl) => {
-    const result = await runAgentLoop({
-      apiKey: "test-key",
-      baseUrl,
+    const agentLoop = createAnthropicAgentLoop({ apiKey: "test-key", baseUrl });
+    const result = await agentLoop.run({
       systemPrompt: "sys",
       userPrompt: "go",
       tools: [fakeTool],
@@ -116,7 +120,7 @@ test("runAgentLoop: no tool_use on the first turn returns the text immediately, 
   });
 });
 
-test("runAgentLoop: a tool execution that throws is logged as an error result and fed back, not thrown out of the loop", async () => {
+test("createAnthropicAgentLoop: a tool execution that throws is logged as an error result and fed back, not thrown out of the loop", async () => {
   const { handler } = scriptedServer([
     {
       stop_reason: "tool_use",
@@ -126,9 +130,8 @@ test("runAgentLoop: a tool execution that throws is logged as an error result an
   ]);
 
   await withFakeServer(handler, async (baseUrl) => {
-    const result = await runAgentLoop({
-      apiKey: "test-key",
-      baseUrl,
+    const agentLoop = createAnthropicAgentLoop({ apiKey: "test-key", baseUrl });
+    const result = await agentLoop.run({
       systemPrompt: "sys",
       userPrompt: "go",
       tools: [fakeTool],
@@ -143,7 +146,7 @@ test("runAgentLoop: a tool execution that throws is logged as an error result an
   });
 });
 
-test("runAgentLoop: exceeding maxTurns while the model keeps asking for tools is a hard error", async () => {
+test("createAnthropicAgentLoop: exceeding maxTurns while the model keeps asking for tools is a hard error", async () => {
   const alwaysToolUse = {
     stop_reason: "tool_use",
     content: [{ type: "tool_use", id: "call_x", name: "api_diff", input: { package: "is-odd" } }],
@@ -151,11 +154,10 @@ test("runAgentLoop: exceeding maxTurns while the model keeps asking for tools is
   const { handler } = scriptedServer([alwaysToolUse, alwaysToolUse, alwaysToolUse]);
 
   await withFakeServer(handler, async (baseUrl) => {
+    const agentLoop = createAnthropicAgentLoop({ apiKey: "test-key", baseUrl });
     await assert.rejects(
       () =>
-        runAgentLoop({
-          apiKey: "test-key",
-          baseUrl,
+        agentLoop.run({
           systemPrompt: "sys",
           userPrompt: "go",
           tools: [fakeTool],
@@ -167,24 +169,250 @@ test("runAgentLoop: exceeding maxTurns while the model keeps asking for tools is
   });
 });
 
-test("runAgentLoop: non-2xx response is a hard error surfacing the status and body", async () => {
+test("createAnthropicAgentLoop: non-2xx response is a hard error surfacing the status and body", async () => {
   await withFakeServer(
     (_req, res) => {
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "internal" }));
     },
     async (baseUrl) => {
+      const agentLoop = createAnthropicAgentLoop({ apiKey: "test-key", baseUrl });
       await assert.rejects(
         () =>
-          runAgentLoop({
-            apiKey: "test-key",
-            baseUrl,
+          agentLoop.run({
             systemPrompt: "sys",
             userPrompt: "go",
             tools: [fakeTool],
             executeTool: async () => ({ text: "{}", isError: false }),
           }),
         /Anthropic API error 500/,
+      );
+    },
+  );
+});
+
+// --- OpenAI-compatible backend (Z.ai, hosted OpenAI, local Ollama/vLLM) ---
+
+test("createOpenAiCompatibleAgentLoop: single tool_calls turn then a final text response — executes the tool, feeds the result back via role:tool", async () => {
+  const { handler, requestBodies } = scriptedServer([
+    {
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "api_diff", arguments: '{"package":"is-odd"}' },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          finish_reason: "stop",
+          message: { role: "assistant", content: "The bump looks safe based on api-diff." },
+        },
+      ],
+    },
+  ]);
+
+  await withFakeServer(handler, async (baseUrl) => {
+    const executed: Array<{ name: string; input: Record<string, unknown> }> = [];
+    const agentLoop = createOpenAiCompatibleAgentLoop({
+      baseUrl,
+      apiKey: "test-key",
+      model: "glm-5.3-flash",
+    });
+    const result = await agentLoop.run({
+      systemPrompt: "You are triaging a dependency bump.",
+      userPrompt: "Investigate the bump.",
+      tools: [fakeTool],
+      executeTool: async (call) => {
+        executed.push(call);
+        return { text: '{"apiCompatible":true}', isError: false };
+      },
+    });
+
+    assert.equal(result.report, "The bump looks safe based on api-diff.");
+    assert.equal(result.turns, 2);
+    assert.equal(executed.length, 1);
+    assert.deepEqual(executed[0], { name: "api_diff", input: { package: "is-odd" } });
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0]!.result, '{"apiCompatible":true}');
+
+    // Second request carries a role:"tool" message keyed by tool_call_id — a
+    // structurally different feedback shape from Anthropic's content blocks.
+    const secondRequest = requestBodies[1] as {
+      messages: Array<{ role: string; tool_call_id?: string; content?: string }>;
+    };
+    const toolMessage = secondRequest.messages.at(-1)!;
+    assert.equal(toolMessage.role, "tool");
+    assert.equal(toolMessage.tool_call_id, "call_1");
+    assert.equal(toolMessage.content, '{"apiCompatible":true}');
+
+    // First request declared the tool in OpenAI's nested function shape.
+    const firstRequest = requestBodies[0] as {
+      tools: Array<{ type: string; function: { name: string; parameters: unknown } }>;
+    };
+    assert.equal(firstRequest.tools[0]!.type, "function");
+    assert.equal(firstRequest.tools[0]!.function.name, "api_diff");
+    assert.ok(firstRequest.tools[0]!.function.parameters);
+  });
+});
+
+test("createOpenAiCompatibleAgentLoop: no tool_calls on the first turn returns content immediately, zero tool calls", async () => {
+  const { handler } = scriptedServer([
+    {
+      choices: [
+        { finish_reason: "stop", message: { role: "assistant", content: "Nothing to check, skipping." } },
+      ],
+    },
+  ]);
+
+  await withFakeServer(handler, async (baseUrl) => {
+    const agentLoop = createOpenAiCompatibleAgentLoop({ baseUrl, model: "glm-5.3-flash" });
+    const result = await agentLoop.run({
+      systemPrompt: "sys",
+      userPrompt: "go",
+      tools: [fakeTool],
+      executeTool: async () => {
+        throw new Error("should never be called");
+      },
+    });
+
+    assert.equal(result.report, "Nothing to check, skipping.");
+    assert.equal(result.turns, 1);
+    assert.equal(result.toolCalls.length, 0);
+  });
+});
+
+test("createOpenAiCompatibleAgentLoop: a tool execution that throws is logged as an error result, not thrown out of the loop", async () => {
+  const { handler } = scriptedServer([
+    {
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            tool_calls: [
+              { id: "call_1", type: "function", function: { name: "api_diff", arguments: '{"package":"is-odd"}' } },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [
+        { finish_reason: "stop", message: { role: "assistant", content: "Tool failed, reporting as inconclusive." } },
+      ],
+    },
+  ]);
+
+  await withFakeServer(handler, async (baseUrl) => {
+    const agentLoop = createOpenAiCompatibleAgentLoop({ baseUrl, model: "glm-5.3-flash" });
+    const result = await agentLoop.run({
+      systemPrompt: "sys",
+      userPrompt: "go",
+      tools: [fakeTool],
+      executeTool: async () => {
+        throw new Error("registry unreachable");
+      },
+    });
+
+    assert.equal(result.report, "Tool failed, reporting as inconclusive.");
+    assert.equal(result.toolCalls[0]!.isError, true);
+    assert.match(result.toolCalls[0]!.result, /registry unreachable/);
+  });
+});
+
+test("createOpenAiCompatibleAgentLoop: unparseable tool_call arguments is a hard error", async () => {
+  const { handler } = scriptedServer([
+    {
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            tool_calls: [
+              { id: "call_1", type: "function", function: { name: "api_diff", arguments: "{not json" } },
+            ],
+          },
+        },
+      ],
+    },
+  ]);
+
+  await withFakeServer(handler, async (baseUrl) => {
+    const agentLoop = createOpenAiCompatibleAgentLoop({ baseUrl, model: "glm-5.3-flash" });
+    await assert.rejects(
+      () =>
+        agentLoop.run({
+          systemPrompt: "sys",
+          userPrompt: "go",
+          tools: [fakeTool],
+          executeTool: async () => ({ text: "{}", isError: false }),
+        }),
+      /unparseable arguments/,
+    );
+  });
+});
+
+test("createOpenAiCompatibleAgentLoop: exceeding maxTurns while the model keeps requesting tool_calls is a hard error", async () => {
+  const alwaysToolCalls = {
+    choices: [
+      {
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          tool_calls: [
+            { id: "call_x", type: "function", function: { name: "api_diff", arguments: '{"package":"is-odd"}' } },
+          ],
+        },
+      },
+    ],
+  };
+  const { handler } = scriptedServer([alwaysToolCalls, alwaysToolCalls, alwaysToolCalls]);
+
+  await withFakeServer(handler, async (baseUrl) => {
+    const agentLoop = createOpenAiCompatibleAgentLoop({ baseUrl, model: "glm-5.3-flash" });
+    await assert.rejects(
+      () =>
+        agentLoop.run({
+          systemPrompt: "sys",
+          userPrompt: "go",
+          tools: [fakeTool],
+          maxTurns: 3,
+          executeTool: async () => ({ text: "{}", isError: false }),
+        }),
+      /exceeded maxTurns/,
+    );
+  });
+});
+
+test("createOpenAiCompatibleAgentLoop: non-2xx response is a hard error surfacing the status and body", async () => {
+  await withFakeServer(
+    (_req, res) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "internal" }));
+    },
+    async (baseUrl) => {
+      const agentLoop = createOpenAiCompatibleAgentLoop({ baseUrl, model: "glm-5.3-flash" });
+      await assert.rejects(
+        () =>
+          agentLoop.run({
+            systemPrompt: "sys",
+            userPrompt: "go",
+            tools: [fakeTool],
+            executeTool: async () => ({ text: "{}", isError: false }),
+          }),
+        /OpenAI-compatible API error 500/,
       );
     },
   );

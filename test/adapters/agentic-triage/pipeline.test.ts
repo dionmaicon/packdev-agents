@@ -12,11 +12,19 @@ import {
   runAgenticTriagePipeline,
   AGENTIC_TRIAGE_COMMENT_MARKER,
 } from "../../../src/adapters/agentic-triage/pipeline.ts";
+import { createAnthropicAgentLoop, type AgentLoop } from "../../../src/adapters/agentic-triage/agentLoop.ts";
 import type {
   GitHubOps,
   CommentInput,
   CheckRunInput,
 } from "../../../src/core/pipeline.ts";
+
+/** For tests where the agent loop must never actually be invoked (actor gate, unsupported bump). */
+const neverCalledAgentLoop: AgentLoop = {
+  run: async () => {
+    throw new Error("agent loop should never be called");
+  },
+};
 
 const execFileAsync = promisify(execFile);
 
@@ -117,7 +125,7 @@ test("runAgenticTriagePipeline: actor not allowed -> skipped-actor, zero GitHub 
       headRef: "HEAD",
       actor: "some-random-human",
       github,
-      apiKey: "unused",
+      agentLoop: neverCalledAgentLoop,
     });
 
     assert.equal(result.status, "skipped-actor");
@@ -142,7 +150,7 @@ test("runAgenticTriagePipeline: grouped bump -> unsupported-bump, no MCP/model c
       headRef: "HEAD",
       actor: "dependabot[bot]",
       github,
-      apiKey: "unused",
+      agentLoop: neverCalledAgentLoop,
     });
 
     assert.equal(result.status, "unsupported-bump");
@@ -174,8 +182,7 @@ test(
             headRef: "HEAD",
             actor: "dependabot[bot]",
             github,
-            apiKey: "test-key",
-            baseUrl,
+            agentLoop: createAnthropicAgentLoop({ apiKey: "test-key", baseUrl }),
           });
 
           assert.equal(result.status, "triaged");

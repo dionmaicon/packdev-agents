@@ -1,14 +1,13 @@
 import { connectPackdevMcp } from "./mcpClient.js";
-import { runAgentLoop, type AgentToolCallLog } from "./agentLoop.js";
+import type { AgentLoop, AgentToolCallLog } from "./agentLoop.js";
 import type { Bump } from "../../core/extractBump.js";
 
 export interface RunAgenticTriageOptions {
   /** Directory with the bump's package.json — same appDir runCompat/runApiDiff would use. */
   appDir: string;
   bump: Bump;
-  apiKey: string;
-  model?: string;
-  baseUrl?: string;
+  /** Which model backend drives the loop — createAnthropicAgentLoop or createOpenAiCompatibleAgentLoop. */
+  agentLoop: AgentLoop;
   maxTurns?: number;
   /** Test-only escape hatch, forwarded to connectPackdevMcp. */
   binPathOverride?: string | undefined;
@@ -76,14 +75,11 @@ export async function runAgenticTriage(
   try {
     const tools = await session.listTools();
 
-    const result = await runAgentLoop({
-      apiKey: options.apiKey,
+    const result = await options.agentLoop.run({
       systemPrompt: buildSystemPrompt(),
       userPrompt: buildUserPrompt(options.bump),
       tools,
       executeTool: (call) => session.callTool(call.name, call.input),
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
       ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
     });
 

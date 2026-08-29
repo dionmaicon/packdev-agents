@@ -3,6 +3,34 @@ import * as github from "@actions/github";
 
 import { runAgenticTriagePipeline } from "./pipeline.js";
 import { createOctokitOps } from "../shared/octokitOps.js";
+import { createAnthropicAgentLoop, createOpenAiCompatibleAgentLoop, type AgentLoop } from "./agentLoop.js";
+
+/** Mirrors github-action/main.ts's buildBrain() selector — same "one interface, pick a backend by input" shape. */
+function buildAgentLoop(): AgentLoop {
+  const provider = core.getInput("model-provider") || "anthropic";
+
+  switch (provider) {
+    case "anthropic":
+      return createAnthropicAgentLoop({
+        apiKey: core.getInput("anthropic-api-key", { required: true }),
+        ...(core.getInput("anthropic-model") ? { model: core.getInput("anthropic-model") } : {}),
+      });
+
+    case "openai-compatible":
+      return createOpenAiCompatibleAgentLoop({
+        baseUrl: core.getInput("openai-compatible-base-url", { required: true }),
+        model: core.getInput("openai-compatible-model", { required: true }),
+        ...(core.getInput("openai-compatible-api-key")
+          ? { apiKey: core.getInput("openai-compatible-api-key") }
+          : {}),
+      });
+
+    default:
+      throw new Error(
+        `Unknown "model-provider" input "${provider}" — expected "anthropic" or "openai-compatible"`,
+      );
+  }
+}
 
 /**
  * Entrypoint for the experimental agentic-triage Action — a SEPARATE step
@@ -19,8 +47,6 @@ async function run(): Promise<void> {
     return;
   }
 
-  const apiKey = core.getInput("anthropic-api-key", { required: true });
-  const model = core.getInput("anthropic-model");
   const token = core.getInput("github-token", { required: true });
   const allowedActorsInput = core.getInput("allowed-actors");
   const allowedActors = allowedActorsInput
@@ -47,9 +73,8 @@ async function run(): Promise<void> {
     headRef: pr.head.sha,
     actor: pr.user.login,
     github: githubOps,
-    apiKey,
+    agentLoop: buildAgentLoop(),
     allowedActors,
-    ...(model ? { model } : {}),
     ...(maxTurns ? { maxTurns } : {}),
     ...(packageJsonPathInput ? { packageJsonPath: packageJsonPathInput } : {}),
   });

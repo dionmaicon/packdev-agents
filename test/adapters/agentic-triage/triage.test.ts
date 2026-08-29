@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { runAgenticTriage } from "../../../src/adapters/agentic-triage/triage.ts";
+import { createAnthropicAgentLoop } from "../../../src/adapters/agentic-triage/agentLoop.ts";
 import type { Bump } from "../../../src/core/extractBump.ts";
 
 async function withFakeServer(
@@ -102,8 +103,7 @@ test(
         const result = await runAgenticTriage({
           appDir,
           bump,
-          apiKey: "test-key",
-          baseUrl,
+          agentLoop: createAnthropicAgentLoop({ apiKey: "test-key", baseUrl }),
         });
 
         assert.equal(result.report, "api_diff found a missing export. Not safe to merge.");

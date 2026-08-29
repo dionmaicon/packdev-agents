@@ -292,15 +292,23 @@ dependency tree") as the tool surface.
 ```
 mcpClient.ts   connectPackdevMcp(cwd) -> spawns `packdev mcp`, wraps the
                real @modelcontextprotocol/sdk Client + StdioClientTransport.
-agentLoop.ts   runAgentLoop(...) -> a real Anthropic Messages API tool-use
-               loop (raw fetch, same convention as brain.ts — no Anthropic
-               SDK dependency): send the prompt + tool list, execute
-               whatever tool_use blocks come back via executeTool, feed
-               the results back as tool_result blocks, repeat until the
-               model stops asking for tools or maxTurns is hit.
-triage.ts      runAgenticTriage(bump, appDir, apiKey) -> wires the two
-               together for one bump: connect, list tools, run the loop,
-               close.
+agentLoop.ts   ONE `AgentLoop` interface (same "one interface, N backend
+               factories" shape as Brain below), two real implementations:
+               createAnthropicAgentLoop (Anthropic Messages API, raw fetch,
+               tool_use/tool_result content blocks) and
+               createOpenAiCompatibleAgentLoop (OpenAI chat/completions
+               wire format: tools nest under {type:"function", function:
+               {...}}, results come back as tool_calls[] with arguments as
+               a JSON STRING not an object, and tool results are separate
+               role:"tool" messages keyed by tool_call_id — genuinely
+               different message plumbing, not just a different base URL).
+               Both drive the same loop shape: send prompt + tools, execute
+               whatever tool calls come back via executeTool, feed results
+               back, repeat until the model stops asking for tools or
+               maxTurns is hit.
+triage.ts      runAgenticTriage(bump, appDir, agentLoop) -> wires an
+               AgentLoop + mcpClient together for one bump: connect, list
+               tools, run the loop, close.
 pipeline.ts    runAgenticTriagePipeline(...) -> the surrounding plumbing
                (actor gate, extractBump, prepareWorkspace at the base ref
                — same as core/pipeline.ts) around triage.ts, posting an
@@ -308,6 +316,17 @@ pipeline.ts    runAgenticTriagePipeline(...) -> the surrounding plumbing
                (AGENTIC_TRIAGE_COMMENT_MARKER, distinct from
                COMMENT_MARKER) and an always-neutral check run.
 ```
+
+Not Anthropic-only by design: `createOpenAiCompatibleAgentLoop` is the same
+backend that already covers hosted OpenAI and local Ollama/vLLM for
+`Brain`, and it's what makes a genuinely different model family testable
+here — verified for real against Z.ai's GLM Coding Plan endpoint
+(`https://api.z.ai/api/coding/paas/v4` — note this is the coding-plan-specific
+path, NOT `/api/paas/v4`, which is the separate pay-as-you-go endpoint;
+using the wrong one is a documented gotcha) with `glm-5.3-flash`. Z.ai's
+tool-calling format is genuinely OpenAI-shaped (`tools`/`tool_calls`), not
+a translation shim, so this exercises the real second wire format, not
+just a second URL.
 
 Deliberately kept OUT of `interpret()`'s `Verdict` union and out of
 auto-merge eligibility entirely: this is the ONLY place in the repo where
@@ -324,12 +343,17 @@ replacing it.
 Real, non-mocked test coverage: `mcpClient.test.ts` spawns the actual
 `packdev mcp` subprocess and calls its real tools; `agentLoop.test.ts`
 fakes only the external boundary (a local HTTP server standing in for
-Anthropic's API, same pattern as `brain.test.ts`) and drives a real
-multi-turn tool-use exchange against it; `triage.test.ts` and
-`pipeline.test.ts` combine both — a real `packdev mcp` server plus a
-scripted fake model — to prove the whole chain actually connects, down to
-asserting the tool result fed back to the model is packdev's genuine JSON
-report, not a stub.
+each backend's real API, same pattern as `brain.test.ts`) and drives a
+real multi-turn tool-use exchange against both the Anthropic and
+OpenAI-compatible wire formats; `triage.test.ts` and `pipeline.test.ts`
+combine both — a real `packdev mcp` server plus a scripted fake model —
+to prove the whole chain actually connects, down to asserting the tool
+result fed back to the model is packdev's genuine JSON report, not a
+stub. `liveZai.test.ts` goes one step further and is NOT faked at all:
+a real call to the real Z.ai API, skipped (not failed) whenever no
+`ZAI_API_KEY` is available, so it never breaks CI or a machine without a
+subscription, but proves real GLM behavior in the loop whenever the key
+is present.
 
 ## Model backend
 

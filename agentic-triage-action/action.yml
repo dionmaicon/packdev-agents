@@ -9,11 +9,31 @@ description: >-
 author: "dionmaicon"
 
 inputs:
+  model-provider:
+    description: >-
+      Which backend drives the tool-use loop. One of: anthropic,
+      openai-compatible (covers hosted OpenAI, Z.ai's GLM Coding Plan
+      endpoint, and any local OpenAI-compatible endpoint like Ollama/vLLM).
+    required: false
+    default: "anthropic"
   anthropic-api-key:
-    description: "Anthropic API key. Required."
-    required: true
+    description: "Required when model-provider: anthropic."
+    required: false
   anthropic-model:
     description: "Defaults to claude-sonnet-5."
+    required: false
+  openai-compatible-base-url:
+    description: >-
+      Required when model-provider: openai-compatible. E.g.
+      https://api.z.ai/api/coding/paas/v4 (Z.ai Coding Plan — NOT
+      /api/paas/v4, that's the pay-as-you-go endpoint), https://api.openai.com/v1,
+      or a local Ollama/vLLM endpoint.
+    required: false
+  openai-compatible-api-key:
+    description: "Required for most hosted endpoints (Z.ai, OpenAI); optional for local endpoints."
+    required: false
+  openai-compatible-model:
+    description: "Required when model-provider: openai-compatible, e.g. glm-5.3-flash."
     required: false
   github-token:
     description: "Token used to post the advisory comment and check run. Needs pull-requests: write and checks: write."
@@ -68,8 +88,12 @@ runs:
       shell: bash
       run: node ${{ github.action_path }}/../dist/adapters/agentic-triage/main.js
       env:
+        INPUT_MODEL-PROVIDER: ${{ inputs.model-provider }}
         INPUT_ANTHROPIC-API-KEY: ${{ inputs.anthropic-api-key }}
         INPUT_ANTHROPIC-MODEL: ${{ inputs.anthropic-model }}
+        INPUT_OPENAI-COMPATIBLE-BASE-URL: ${{ inputs.openai-compatible-base-url }}
+        INPUT_OPENAI-COMPATIBLE-API-KEY: ${{ inputs.openai-compatible-api-key }}
+        INPUT_OPENAI-COMPATIBLE-MODEL: ${{ inputs.openai-compatible-model }}
         INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}
         INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}
         INPUT_PACKAGE-JSON-PATH: ${{ inputs.package-json-path }}

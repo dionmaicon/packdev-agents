@@ -4,6 +4,7 @@ import { extractBump, isUnsupported, type Bump, type Unsupported } from "../../c
 import { prepareWorkspace } from "../../core/prepareWorkspace.js";
 import { DEFAULT_ALLOWED_ACTORS, type GitHubOps } from "../../core/pipeline.js";
 import { runAgenticTriage, type AgenticTriageResult } from "./triage.js";
+import type { AgentLoop } from "./agentLoop.js";
 
 /** Distinct from core/pipeline.ts's COMMENT_MARKER so both can run on the same PR without clobbering each other's comment. */
 export const AGENTIC_TRIAGE_COMMENT_MARKER = "<!-- packdev-agents:agentic-triage -->";
@@ -14,9 +15,8 @@ export interface RunAgenticTriagePipelineOptions {
   headRef: string;
   actor: string;
   github: GitHubOps;
-  apiKey: string;
-  model?: string | undefined;
-  baseUrl?: string | undefined;
+  /** Which model backend drives the loop — createAnthropicAgentLoop or createOpenAiCompatibleAgentLoop. */
+  agentLoop: AgentLoop;
   maxTurns?: number | undefined;
   packageJsonPath?: string | undefined;
   allowedActors?: string[] | undefined;
@@ -105,9 +105,7 @@ export async function runAgenticTriagePipeline(
     triage = await runAgenticTriage({
       appDir,
       bump,
-      apiKey: options.apiKey,
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      agentLoop: options.agentLoop,
       ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
       ...(options.binPathOverride ? { binPathOverride: options.binPathOverride } : {}),
     });
