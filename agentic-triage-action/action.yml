@@ -65,6 +65,17 @@ runs:
         # Same reason as the main action: prepareWorkspace checks out and
         # installs the PR's BASE ref, which needs full history reachable.
         fetch-depth: 0
+        # Explicit on purpose: GitHub Actions workflows triggered by
+        # Dependabot's `pull_request` event run read-only and WITHOUT
+        # repository secrets — a hard platform restriction (Dependabot PRs
+        # are treated like fork PRs for secret access). The documented
+        # workaround is `pull_request_target` on the calling workflow,
+        # which defaults `github.ref`/checkout to the BASE branch, not the
+        # PR — so the head SHA must be requested explicitly here, or this
+        # action would silently analyze the wrong commit. Safe for
+        # `pull_request` too (github.event.pull_request.head.sha exists on
+        # both events), so this line doesn't have to vary by trigger type.
+        ref: ${{ github.event.pull_request.head.sha }}
 
     - uses: actions/setup-node@v4
       with:

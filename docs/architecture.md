@@ -328,6 +328,26 @@ tool-calling format is genuinely OpenAI-shaped (`tools`/`tool_calls`), not
 a translation shim, so this exercises the real second wire format, not
 just a second URL.
 
+**Trigger gotcha, hit live and worth documenting:** GitHub Actions
+workflows triggered by Dependabot's `pull_request` event run read-only and
+WITHOUT repository secrets — a platform restriction, not a bug in this
+code (Dependabot PRs are treated like fork PRs for secret access; the main
+`compat` job never hit this because it only ever needed the
+auto-provided `github.token`, never a custom secret). The documented
+GitHub-sanctioned workaround is `pull_request_target` for the job that
+needs a secret — it runs with base-branch trust, but its default
+`github.ref`/checkout resolves to the BASE branch, not the PR, so
+`agentic-triage-action/action.yml`'s checkout step sets
+`ref: ${{ github.event.pull_request.head.sha }}` explicitly (safe on
+either trigger — that field exists on both events' payloads). The two
+demo repos run agentic-triage from its own workflow file on
+`pull_request_target`, not the same file as the `pull_request`-triggered
+`compat` job, since a workflow's trigger type is file-wide, not
+job-wide, and there was no reason to touch the already-working `compat`
+job's trigger to fix this. Since the actor gate (`dependabot[bot]` only)
+already applies, this is the same trust boundary GitHub's own docs
+recommend for "Dependabot needs secrets" — not a wider exposure.
+
 Deliberately kept OUT of `interpret()`'s `Verdict` union and out of
 auto-merge eligibility entirely: this is the ONLY place in the repo where
 a model gets to decide what to DO next, not just what to say, and that is
