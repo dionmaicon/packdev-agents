@@ -160,6 +160,14 @@ export async function runGithubPipeline(
       packageName: bump.name,
       versions: [bump.toVersion],
       testCommand: options.testCommand,
+      // Duplicate-copy regressions (DI singletons, instanceof checks) are a
+      // real, distinct failure mode from an incompatible API — --check-dupes
+      // surfaces them as dupesRegression on the report (already rendered
+      // verbatim by report.ts). --seed-lockfile is required for accurate
+      // nested-fork detection: a fresh solve re-flattens away duplicates a
+      // real install would keep. Costs nothing extra: dupes are checked
+      // against installs compat already performs.
+      extraArgs: ["--check-dupes", "--seed-lockfile"],
     });
     verdict = interpret(result.report, result.exitCode);
   } finally {

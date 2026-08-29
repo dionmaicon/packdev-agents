@@ -172,7 +172,12 @@ This step is the control guard. It is not an optimization to skip it.
 ### 3. `runCompat(workspace, bump) -> CompatReport`
 
 Spawn the CLI with `--json`, parse stdout. Capture stderr separately for
-diagnostics. Relevant fields:
+diagnostics. Always passes `--check-dupes --seed-lockfile`: dupes checking
+runs against installs `compat` already performs (no added cost), and
+`--seed-lockfile` is packdev's own recommended pairing for it — without it a
+fresh solve can re-flatten away exactly the nested-fork duplicate class
+`--check-dupes` exists to catch. `report.ts` already renders `dupesRegression`
+verbatim on any verdict kind that carries one. Relevant fields:
 
 - `versions[]`: `{ version, status, exitCode, durationMs, output?,
   lockfileHash, dupeCounts?, dupesRegression?, esmMismatch?, consumers? }`

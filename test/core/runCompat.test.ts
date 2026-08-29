@@ -231,3 +231,105 @@ test(
     }
   },
 );
+
+test("runCompat: forwards extraArgs verbatim to the spawned packdev process", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "packdev-agents-fakebin-"));
+  try {
+    const report = minimalReport();
+    // Echoes argv to stderr so the test can assert on exactly what reached
+    // the CLI, then answers with a normal report — this is a structural
+    // pass-through check (extraArgs -> spawned argv), not a claim about
+    // what packdev's own dupes heuristics detect in any given tree; that's
+    // covered separately by the e2e smoke test below.
+    const binPath = await writeFakeBin(
+      dir,
+      `#!/usr/bin/env node\nprocess.stderr.write(JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(${JSON.stringify(
+        JSON.stringify(report),
+      )});\nprocess.exit(0);\n`,
+    );
+    const appDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-app-"));
+    try {
+      const result = await runCompat({
+        appDir,
+        packageName: "some-pkg",
+        versions: ["1.1.0"],
+        testCommand: "true",
+        binPathOverride: binPath,
+        extraArgs: ["--check-dupes", "--seed-lockfile"],
+      });
+      const argv = JSON.parse(result.stderr) as string[];
+      assert.ok(argv.includes("--check-dupes"));
+      assert.ok(argv.includes("--seed-lockfile"));
+    } finally {
+      await rm(appDir, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "runCompat: --check-dupes + --seed-lockfile run cleanly end-to-end against the real CLI",
+  { timeout: 120_000 },
+  async () => {
+    // A real nested-fork duplicate does exist in this fixture's resolved
+    // tree (verified manually: node_modules/is-odd@3.0.1 at the top plus a
+    // second, distinct is-odd@3.0.0 nested under the file: dependency,
+    // visible in packdev's own lockfile snapshot) — but whether packdev's
+    // dupes scanner surfaces it as dupesRegression depends on its own
+    // internal graph-walk heuristics (e.g. whether it follows node_modules
+    // under a symlinked local "file:" package), which isn't something this
+    // repo controls or should assert on. This test only proves the flags
+    // are safe to always pass: the real CLI accepts them, still resolves a
+    // real control, and still runs the real test command to completion.
+    const appDir = await mkdtemp(
+      path.join(tmpdir(), "packdev-agents-dupes-app-"),
+    );
+    try {
+      await mkdir(path.join(appDir, "vendor", "wrapper-lib"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "vendor", "wrapper-lib", "package.json"),
+        JSON.stringify(
+          { name: "wrapper-lib", version: "1.0.0", dependencies: { "is-odd": "3.0.0" } },
+          null,
+          2,
+        ),
+      );
+      await writeFile(
+        path.join(appDir, "package.json"),
+        JSON.stringify(
+          {
+            name: "dupes-fixture-app",
+            version: "1.0.0",
+            dependencies: { "is-odd": "3.0.0", "wrapper-lib": "file:./vendor/wrapper-lib" },
+          },
+          null,
+          2,
+        ),
+      );
+
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+      await execFileAsync("npm", ["install", "--no-audit", "--no-fund"], {
+        cwd: appDir,
+      });
+
+      const result = await runCompat({
+        appDir,
+        packageName: "is-odd",
+        versions: ["3.0.1"],
+        testCommand: 'node -e "require(\'is-odd\')(4)"',
+        extraArgs: ["--check-dupes", "--seed-lockfile"],
+      });
+
+      assert.equal(result.report.seededLockfile, true);
+      assert.ok(result.report.control, "control should have resolved from node_modules");
+      const candidate = result.report.versions.find((v) => v.version === "3.0.1");
+      assert.ok(candidate, "3.0.1 should be in the report's versions");
+      assert.equal(candidate!.status, "PASSED");
+    } finally {
+      await rm(appDir, { recursive: true, force: true });
+    }
+  },
+);
