@@ -1,9 +1,9 @@
-import { extractBump, isUnsupported, type Bump, type Unsupported } from "../../core/extractBump.js";
-import { prepareWorkspace } from "../../core/prepareWorkspace.js";
-import { runCompat } from "../../core/runCompat.js";
-import { interpret, isAutoMergeEligible, type Verdict } from "../../core/interpret.js";
-import { render, } from "../../core/report.js";
-import { renderWithBrain, type Brain } from "../../core/brain.js";
+import { extractBump, isUnsupported, type Bump, type Unsupported } from "./extractBump.js";
+import { prepareWorkspace } from "./prepareWorkspace.js";
+import { runCompat } from "./runCompat.js";
+import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
+import { render } from "./report.js";
+import { renderWithBrain, type Brain } from "./brain.js";
 
 export const DEFAULT_ALLOWED_ACTORS = ["dependabot[bot]", "renovate[bot]"];
 

@@ -1,5 +1,5 @@
 import type { getOctokit } from "@actions/github";
-import type { GitHubOps, CommentInput, CheckRunInput } from "./pipeline.js";
+import type { GitHubOps, CommentInput, CheckRunInput } from "../../core/pipeline.js";
 
 export interface OctokitOpsConfig {
   octokit: ReturnType<typeof getOctokit>;

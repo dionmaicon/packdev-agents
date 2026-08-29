@@ -11,7 +11,7 @@ import {
   type GitHubOps,
   type CommentInput,
   type CheckRunInput,
-} from "../../../src/adapters/github-action/pipeline.ts";
+} from "../../src/core/pipeline.ts";
 
 const execFileAsync = promisify(execFile);
 

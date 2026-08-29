@@ -1,7 +1,7 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 
-import { runGithubPipeline, checkConclusionFor } from "./pipeline.js";
+import { runGithubPipeline, checkConclusionFor } from "../../core/pipeline.js";
 import { createOctokitOps } from "./octokitOps.js";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../../core/brain.js";
 
