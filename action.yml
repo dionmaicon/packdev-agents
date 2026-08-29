@@ -24,6 +24,13 @@ inputs:
     description: "Fail this Action step (in addition to the check run conclusion) when the verdict isn't PASSED or PASSED_WEAK."
     required: false
     default: "true"
+  package-json-path:
+    description: >-
+      Path to the target package.json, relative to the repo root. Defaults
+      to "package.json" (repo root). Set this for a monorepo where the
+      bumped dependency lives in a workspace member, e.g.
+      "packages/api/package.json".
+    required: false
   brain:
     description: >-
       Model backend for failure-summary prose only — never decides
@@ -88,6 +95,7 @@ runs:
         INPUT_AUTO-MERGE: ${{ inputs.auto-merge }}
         INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}
         INPUT_FAIL-STEP-ON-NON-PASS: ${{ inputs.fail-step-on-non-pass }}
+        INPUT_PACKAGE-JSON-PATH: ${{ inputs.package-json-path }}
         INPUT_BRAIN: ${{ inputs.brain }}
         INPUT_ANTHROPIC-API-KEY: ${{ inputs.anthropic-api-key }}
         INPUT_ANTHROPIC-MODEL: ${{ inputs.anthropic-model }}

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, rm, access, readdir } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, access, readdir, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -52,6 +52,60 @@ async function makeRepo(
   await git(repoDir, ["commit", "-q", "-m", "bump"]);
 
   return { repoDir, cleanup: () => rm(repoDir, { recursive: true, force: true }) };
+}
+
+/**
+ * A real npm-workspaces monorepo: root package.json declares "workspaces":
+ * ["packages/*"], and the bumped dependency lives in packages/api's own
+ * package.json — not the root's. Root has no "dependencies" of its own,
+ * matching a typical real workspaces root.
+ */
+async function makeMonorepo(
+  memberDeps: Record<string, string>,
+  headMemberDeps: Record<string, string>,
+): Promise<{ repoDir: string; packageJsonPath: string; cleanup: () => Promise<void> }> {
+  const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-monorepo-"));
+  await git(repoDir, ["init", "-q"]);
+  await git(repoDir, ["config", "user.email", "test@test.local"]);
+  await git(repoDir, ["config", "user.name", "test"]);
+
+  await writeFile(
+    path.join(repoDir, "package.json"),
+    JSON.stringify(
+      { name: "monorepo-root", version: "1.0.0", private: true, workspaces: ["packages/*"] },
+      null,
+      2,
+    ),
+  );
+  await mkdir(path.join(repoDir, "packages", "api"), { recursive: true });
+  await writeFile(
+    path.join(repoDir, "packages", "api", "package.json"),
+    JSON.stringify(
+      { name: "@fixture/api", version: "1.0.0", dependencies: memberDeps },
+      null,
+      2,
+    ),
+  );
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "base"]);
+  await git(repoDir, ["branch", "base"]);
+
+  await writeFile(
+    path.join(repoDir, "packages", "api", "package.json"),
+    JSON.stringify(
+      { name: "@fixture/api", version: "1.0.0", dependencies: headMemberDeps },
+      null,
+      2,
+    ),
+  );
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "bump"]);
+
+  return {
+    repoDir,
+    packageJsonPath: "packages/api/package.json",
+    cleanup: () => rm(repoDir, { recursive: true, force: true }),
+  };
 }
 
 function fakeGitHubOps(): GitHubOps & {
@@ -397,6 +451,81 @@ test(
       assert.equal(github.checkRuns[0]!.conclusion, "neutral");
       assert.equal(github.mergeCalls, 0);
       assert.match(github.comments[0]!.body, /TYPE_CHECK_ONLY/);
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+test(
+  "runGithubPipeline: packageJsonPath targets a workspace member, not the monorepo root",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, packageJsonPath, cleanup } = await makeMonorepo(
+      { "is-odd": "3.0.0" },
+      { "is-odd": "3.0.1" },
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
+        github,
+        packageJsonPath,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        // Proves extractBump read the DIFF from packages/api's own
+        // package.json, not the monorepo root's (which has no
+        // "dependencies" at all — a diff against the root would have
+        // found nothing and returned Unsupported instead).
+        assert.equal(result.bump.name, "is-odd");
+        assert.equal(result.bump.fromVersion, "3.0.0");
+        assert.equal(result.bump.toVersion, "3.0.1");
+        // Proves the compat sandbox actually ran from the workspace
+        // member's directory and found a real control there (hoisted or
+        // not) — a NO_CONTROL verdict here would mean it ran against the
+        // wrong directory instead.
+        assert.equal(result.verdict.kind, "PASSED");
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+test(
+  "runGithubPipeline: packageJsonPath — a genuinely incompatible bump in a workspace member is still caught",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, packageJsonPath, cleanup } = await makeMonorepo(
+      { "is-odd": "3.0.0" },
+      { "is-odd": "3.0.1" },
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "const v=require(\'is-odd/package.json\').version; if (v === \'3.0.1\') process.exit(1)"',
+        github,
+        packageJsonPath,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "INCOMPATIBLE");
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "failure");
     } finally {
       await cleanup();
     }

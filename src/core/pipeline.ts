@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { extractBump, isUnsupported, type Bump, type Unsupported } from "./extractBump.js";
 import { prepareWorkspace } from "./prepareWorkspace.js";
 import { runCompat } from "./runCompat.js";
@@ -47,6 +49,17 @@ export interface RunGithubPipelineOptions {
   actor: string;
   testCommand: string;
   github: GitHubOps;
+  /**
+   * Path to the target package.json, relative to repoDir. Defaults to
+   * "package.json" (repo root). Set this for a monorepo where the bumped
+   * dependency lives in a workspace member, e.g. "packages/api/package.json"
+   * — the compat sandbox is then run from that member's directory, not the
+   * repo root, so packdev's control resolution (node_modules-based) finds
+   * the right install. The install itself still runs from repoDir's root
+   * (prepareWorkspace), which is correct for real npm/yarn/pnpm workspaces:
+   * that's how those are meant to be installed.
+   */
+  packageJsonPath?: string | undefined;
   /** Defaults to dependabot[bot] and renovate[bot]. Defense-in-depth: the caller workflow should already gate on actor at the job level. */
   allowedActors?: string[] | undefined;
   /** Only takes effect when the verdict is PASSED. Off by default — merging is the user's call. */
@@ -98,6 +111,7 @@ export async function runGithubPipeline(
     repoDir: options.repoDir,
     baseRef: options.baseRef,
     headRef: options.headRef,
+    ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
   });
 
   if (isUnsupported(bump)) {
@@ -122,12 +136,27 @@ export async function runGithubPipeline(
   const workspace = await prepareWorkspace({
     repoDir: options.repoDir,
     baseRef: options.baseRef,
+    ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
   });
+
+  // The install itself runs from the workspace root (correct for real
+  // npm/yarn/pnpm workspaces — that's how they're meant to be installed),
+  // but packdev's compat sandbox needs to run FROM the workspace member's
+  // own directory so its control resolution (node_modules-based) finds
+  // that member's install, not the root's. Mirrors how a developer would
+  // actually invoke `packdev compat` themselves: cd into the package, run
+  // it there — packdev's own workspace-mode auto-detection still widens
+  // the sandbox to the whole monorepo root when workspace:-protocol deps
+  // require it, regardless of cwd.
+  const memberDir = options.packageJsonPath
+    ? path.dirname(options.packageJsonPath)
+    : ".";
+  const appDir = path.join(workspace.dir, memberDir);
 
   let verdict: Verdict;
   try {
     const result = await runCompat({
-      appDir: workspace.dir,
+      appDir,
       packageName: bump.name,
       versions: [bump.toVersion],
       testCommand: options.testCommand,

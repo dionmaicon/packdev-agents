@@ -61,6 +61,7 @@ async function runOnce(): Promise<void> {
   const allowedActors = allowedActorsInput
     ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
+  const packageJsonPath = env("PACKAGE_JSON_PATH");
 
   const octokit = githubApi.getOctokit(token);
   const prSource = createOctokitPullRequestSource({ octokit, owner, repo });
@@ -77,6 +78,7 @@ async function runOnce(): Promise<void> {
     allowedActors,
     autoMerge,
     brain,
+    ...(packageJsonPath ? { packageJsonPath } : {}),
   });
 
   for (const { pr, result: prResult } of result.processed) {

@@ -51,6 +51,7 @@ async function run(): Promise<void> {
   const allowedActors = allowedActorsInput
     ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
+  const packageJsonPathInput = core.getInput("package-json-path");
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -77,6 +78,7 @@ async function run(): Promise<void> {
     allowedActors,
     autoMerge,
     brain: buildBrain(),
+    ...(packageJsonPathInput ? { packageJsonPath: packageJsonPathInput } : {}),
   });
 
   core.setOutput("status", result.status);

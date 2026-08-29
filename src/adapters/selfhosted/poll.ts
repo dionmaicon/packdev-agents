@@ -14,6 +14,8 @@ export interface PollOptions {
   prSource: PullRequestSource;
   /** Builds the GitHubOps sink for a specific PR — needs the PR number and head SHA to address comments/checks at. */
   githubOpsFor: (pr: OpenBotPR) => GitHubOps;
+  /** See RunGithubPipelineOptions.packageJsonPath — for a monorepo target, e.g. "packages/api/package.json". */
+  packageJsonPath?: string | undefined;
   allowedActors?: string[] | undefined;
   autoMerge?: boolean | undefined;
   brain?: Brain | undefined;
@@ -71,6 +73,7 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
       allowedActors: options.allowedActors,
       autoMerge: options.autoMerge,
       brain: options.brain,
+      ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
     });
 
     processed.push({ pr, result });
