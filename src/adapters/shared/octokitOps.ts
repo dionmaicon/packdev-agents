@@ -11,10 +11,14 @@ export interface OctokitOpsConfig {
 
 /**
  * The real GitHub API wiring behind GitHubOps. Deliberately thin — all the
- * actual decision logic lives in pipeline.ts and is tested there without
- * needing GitHub API access. This file just translates GitHubOps calls into
- * Octokit calls; if something here is wrong it will show up as a broken PR
- * comment/check in practice, not as a subtle logic bug.
+ * actual decision logic lives in the pipelines that consume GitHubOps and
+ * is tested there without needing GitHub API access. This file just
+ * translates GitHubOps calls into Octokit calls; if something here is
+ * wrong it will show up as a broken PR comment/check in practice, not as
+ * a subtle logic bug. Lives under adapters/shared/, not any one specific
+ * adapter's directory, because every adapter that talks to GitHub
+ * (github-action, selfhosted, agentic-triage) needs the exact same
+ * translation — adapters don't import each other, only core and shared.
  */
 export function createOctokitOps(config: OctokitOpsConfig): GitHubOps {
   const { octokit, owner, repo, prNumber, headSha } = config;

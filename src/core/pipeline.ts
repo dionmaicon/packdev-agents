@@ -30,7 +30,7 @@ export interface CheckRunInput {
  * Everything that actually talks to GitHub, behind one small interface —
  * kept separate from the pipeline logic so the pipeline can be tested
  * against a real git repo and a real packdev run without any GitHub API
- * access. See src/adapters/github-action/octokitOps.ts for the real
+ * access. See src/adapters/shared/octokitOps.ts for the real
  * implementation and main.ts for how it's wired up.
  */
 export interface GitHubOps {

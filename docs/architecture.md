@@ -280,6 +280,57 @@ PRs so a restart does not re-comment. Same core, same renderer; sink posts
 via the user's own `gh` token. Webhook relay stays deferred per
 [`use-cases.md`](use-cases.md).
 
+### Agentic triage (experimental) — `src/adapters/agentic-triage/`
+
+A genuinely different adapter shape, not a mode of the two above: instead
+of a fixed, deterministic sequence (`extractBump -> compat -> interpret ->
+report`), a real coding-agent tool-use loop decides for itself which of
+packdev's own tools to call and in what order, using `packdev mcp`
+(packdev's own MCP server — stdio, local-only, "never uploads your
+dependency tree") as the tool surface.
+
+```
+mcpClient.ts   connectPackdevMcp(cwd) -> spawns `packdev mcp`, wraps the
+               real @modelcontextprotocol/sdk Client + StdioClientTransport.
+agentLoop.ts   runAgentLoop(...) -> a real Anthropic Messages API tool-use
+               loop (raw fetch, same convention as brain.ts — no Anthropic
+               SDK dependency): send the prompt + tool list, execute
+               whatever tool_use blocks come back via executeTool, feed
+               the results back as tool_result blocks, repeat until the
+               model stops asking for tools or maxTurns is hit.
+triage.ts      runAgenticTriage(bump, appDir, apiKey) -> wires the two
+               together for one bump: connect, list tools, run the loop,
+               close.
+pipeline.ts    runAgenticTriagePipeline(...) -> the surrounding plumbing
+               (actor gate, extractBump, prepareWorkspace at the base ref
+               — same as core/pipeline.ts) around triage.ts, posting an
+               ADVISORY comment under its own marker
+               (AGENTIC_TRIAGE_COMMENT_MARKER, distinct from
+               COMMENT_MARKER) and an always-neutral check run.
+```
+
+Deliberately kept OUT of `interpret()`'s `Verdict` union and out of
+auto-merge eligibility entirely: this is the ONLY place in the repo where
+a model gets to decide what to DO next, not just what to say, and that is
+exactly the property that must never leak into the deterministic,
+reproducible pipeline the rest of the system is built around. Meant to run
+ALONGSIDE the main `packdev compat` action on the same PR
+(`agentic-triage-action/action.yml`, a separate composite action, not a
+mode flag on `action.yml` at the repo root — this repo already chose
+"separate concerns, separate actions" over a shared entrypoint once
+before, for the demo-repo split; this follows the same call), never
+replacing it.
+
+Real, non-mocked test coverage: `mcpClient.test.ts` spawns the actual
+`packdev mcp` subprocess and calls its real tools; `agentLoop.test.ts`
+fakes only the external boundary (a local HTTP server standing in for
+Anthropic's API, same pattern as `brain.test.ts`) and drives a real
+multi-turn tool-use exchange against it; `triage.test.ts` and
+`pipeline.test.ts` combine both — a real `packdev mcp` server plus a
+scripted fake model — to prove the whole chain actually connects, down to
+asserting the tool result fed back to the model is packdev's genuine JSON
+report, not a stub.
+
 ## Model backend
 
 One `Brain` interface, implementations for a hosted API and for a local

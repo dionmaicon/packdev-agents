@@ -1,7 +1,7 @@
 import * as githubApi from "@actions/github";
 
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../../core/brain.js";
-import { createOctokitOps } from "../github-action/octokitOps.js";
+import { createOctokitOps } from "../shared/octokitOps.js";
 import { createOctokitPullRequestSource } from "./discoverPRs.js";
 import { pollOnce } from "./poll.js";
 

@@ -1,0 +1,76 @@
+name: "packdev agentic triage (experimental)"
+description: >-
+  Runs an experimental, model-driven triage of a Dependabot/Renovate bump:
+  a coding agent decides for itself which of packdev's own tools
+  (api-diff, compat, dupes, behavior-diff) to run and in what order, then
+  posts its findings as an advisory PR comment. Never gates a merge — this
+  is meant to run ALONGSIDE the main "packdev compat check" action
+  (../action.yml), not replace it.
+author: "dionmaicon"
+
+inputs:
+  anthropic-api-key:
+    description: "Anthropic API key. Required."
+    required: true
+  anthropic-model:
+    description: "Defaults to claude-sonnet-5."
+    required: false
+  github-token:
+    description: "Token used to post the advisory comment and check run. Needs pull-requests: write and checks: write."
+    required: true
+    default: ${{ github.token }}
+  allowed-actors:
+    description: "Comma-separated list of PR authors this action acts on."
+    required: false
+    default: "dependabot[bot],renovate[bot]"
+  package-json-path:
+    description: >-
+      Optional override, relative to the repo root. Without it (the
+      default), auto-discovers which package.json actually changed —
+      same behavior as the main action's equivalent input.
+    required: false
+  max-turns:
+    description: "Hard cap on model/tool round-trips before this fails as a runaway loop. Defaults to 10."
+    required: false
+
+outputs:
+  status:
+    description: "skipped-actor | unsupported-bump | triaged"
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        # Same reason as the main action: prepareWorkspace checks out and
+        # installs the PR's BASE ref, which needs full history reachable.
+        fetch-depth: 0
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install packdev-agents
+      shell: bash
+      # This action.yml lives one directory below the repo root (see the
+      # module doc comment above for why this is a separate action rather
+      # than a mode flag on the main one) — action_path points HERE, but
+      # package.json/dist/ live at the repo root, one level up.
+      working-directory: ${{ github.action_path }}/..
+      run: npm ci
+
+    - name: Build packdev-agents
+      shell: bash
+      working-directory: ${{ github.action_path }}/..
+      run: npm run build
+
+    - name: Run agentic triage
+      shell: bash
+      run: node ${{ github.action_path }}/../dist/adapters/agentic-triage/main.js
+      env:
+        INPUT_ANTHROPIC-API-KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_ANTHROPIC-MODEL: ${{ inputs.anthropic-model }}
+        INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}
+        INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}
+        INPUT_PACKAGE-JSON-PATH: ${{ inputs.package-json-path }}
+        INPUT_MAX-TURNS: ${{ inputs.max-turns }}
