@@ -20,6 +20,8 @@ export interface PollOptions {
   packageJsonPath?: string | undefined;
   allowedActors?: string[] | undefined;
   autoMerge?: boolean | undefined;
+  /** See RunGithubPipelineOptions.testCombinedBump. Defaults to true. */
+  testCombinedBump?: boolean | undefined;
   brain?: Brain | undefined;
 }
 
@@ -76,6 +78,7 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
       autoMerge: options.autoMerge,
       brain: options.brain,
       ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
+      ...(options.testCombinedBump !== undefined ? { testCombinedBump: options.testCombinedBump } : {}),
     });
 
     processed.push({ pr, result });

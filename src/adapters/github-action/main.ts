@@ -61,6 +61,8 @@ async function run(): Promise<void> {
     ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
   const packageJsonPathInput = core.getInput("package-json-path");
+  const testCombinedBumpInput = core.getInput("test-combined-bump");
+  const testCombinedBump = testCombinedBumpInput ? core.getBooleanInput("test-combined-bump") : undefined;
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -88,6 +90,7 @@ async function run(): Promise<void> {
     autoMerge,
     brain: buildBrain(),
     ...(packageJsonPathInput ? { packageJsonPath: packageJsonPathInput } : {}),
+    ...(testCombinedBump !== undefined ? { testCombinedBump } : {}),
   });
 
   core.setOutput("status", result.status);
@@ -130,6 +133,27 @@ async function run(): Promise<void> {
     );
     if (failStepOnNonPass && worst === "failure") {
       core.setFailed(`packdev compat: at least one app failed for ${result.bump.name} ${result.bump.toVersion}`);
+    }
+    return;
+  }
+
+  if (result.status === "independent-verdict") {
+    const stepConclusions = result.results.map((r) =>
+      r.step.kind === "static-incompatible" ? "failure" : checkConclusionFor(r.step.verdict),
+    );
+    const combinedFailed = result.combined.kind === "failed";
+    const worst = stepConclusions.includes("failure") || combinedFailed
+      ? "failure"
+      : stepConclusions.includes("neutral")
+        ? "neutral"
+        : "success";
+    core.setOutput("merged", String(result.merged));
+    core.info(
+      `Independent bumps — ${result.results.length} packages to differing versions: ${worst} ` +
+        `(combined: ${result.combined.kind}, merged: ${result.merged})`,
+    );
+    if (failStepOnNonPass && worst === "failure") {
+      core.setFailed(`packdev compat: at least one bump (or the combined state) failed`);
     }
     return;
   }

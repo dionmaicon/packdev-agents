@@ -4,6 +4,7 @@ import {
   extractBump,
   isUnsupported,
   isCrossFileBump,
+  isIndependentBumps,
   type Bump,
   type Unsupported,
 } from "../../core/extractBump.js";
@@ -87,18 +88,25 @@ export async function runAgenticTriagePipeline(
     ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
   });
 
-  // Cross-file bumps (the same package bumped across multiple independent
-  // apps — see core/pipeline.ts, which DOES support this) are out of scope
-  // for the agentic path in v1: it would need one agent loop run per app,
-  // a bigger lift than this experimental adapter currently does. Reported
-  // the same way an ordinary unsupported bump would be.
+  // Cross-file bumps and IndependentBumps (differing-version bumps in one
+  // file — see core/pipeline.ts, which DOES support both) are out of scope
+  // for the agentic path in v1: each would need multiple agent loop runs
+  // (one per app, or one per isolated bump), a bigger lift than this
+  // experimental adapter currently does. Reported the same way an
+  // ordinary unsupported bump would be.
   const bump: Bump | Unsupported = isCrossFileBump(bumpResult)
     ? {
         kind: "unsupported",
         reason: `${bumpResult.name} ${bumpResult.toVersion} bumped across ${bumpResult.bumps.length} apps — cross-file bumps aren't supported by agentic-triage yet`,
         bumps: bumpResult.bumps,
       }
-    : bumpResult;
+    : isIndependentBumps(bumpResult)
+      ? {
+          kind: "unsupported",
+          reason: `${bumpResult.bumps.length} packages bumped to differing target versions in one PR — independent bumps aren't supported by agentic-triage yet`,
+          bumps: bumpResult.bumps,
+        }
+      : bumpResult;
 
   if (isUnsupported(bump)) {
     const body =

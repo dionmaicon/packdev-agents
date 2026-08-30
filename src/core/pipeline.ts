@@ -4,13 +4,16 @@ import {
   extractBump,
   isUnsupported,
   isCrossFileBump,
+  isIndependentBumps,
   type Bump,
   type CrossFileBump,
+  type IndependentBumps,
   type Unsupported,
 } from "./extractBump.js";
 import { prepareWorkspace, type Workspace } from "./prepareWorkspace.js";
 import { runCompat } from "./runCompat.js";
 import { runApiDiff } from "./runApiDiff.js";
+import { runCombinedTest } from "./runCombinedTest.js";
 import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
 import { render, renderStaticIncompatible } from "./report.js";
 import { renderWithBrain, type Brain } from "./brain.js";
@@ -82,8 +85,25 @@ export interface RunGithubPipelineOptions {
   allowedActors?: string[] | undefined;
   /** Only takes effect when the verdict is PASSED. Off by default — merging is the user's call. */
   autoMerge?: boolean | undefined;
+  /**
+   * Only relevant for an IndependentBumps PR (see extractBump.ts): whether
+   * to run one extra check against the PR's real combined state (every
+   * bump applied at once, as actually committed), on top of testing each
+   * bump in isolation. Defaults to true — an interaction bug between two
+   * individually-fine bumps is a real correctness gap isolation alone
+   * cannot see. Set to false to cap cost at N isolated runs instead of
+   * N+1, e.g. for a high-traffic repo where that extra sandbox run isn't
+   * worth it.
+   */
+  testCombinedBump?: boolean | undefined;
   brain?: Brain | undefined;
 }
+
+/** One IndependentBumps PR's combined-state result (see extractBump.ts). Distinct from CompatStepResult: no packdev sandbox, no control comparison — a plain pass/fail against the PR's real head. */
+export type CombinedResult =
+  | { kind: "skipped" }
+  | { kind: "passed"; output: string }
+  | { kind: "failed"; output: string; exitCode: number };
 
 /** One package.json's outcome within a cross-file bump (see extractBump.ts's CrossFileBump). */
 export type CompatStepResult =
@@ -99,6 +119,13 @@ export type RunGithubPipelineResult =
       status: "cross-file-verdict";
       bump: CrossFileBump;
       results: Array<{ bump: Bump; step: CompatStepResult }>;
+      merged: boolean;
+    }
+  | {
+      status: "independent-verdict";
+      bump: IndependentBumps;
+      results: Array<{ bump: Bump; step: CompatStepResult }>;
+      combined: CombinedResult;
       merged: boolean;
     };
 
@@ -235,6 +262,81 @@ function renderStep(step: CompatStepResult, bump: Bump): string {
   return step.kind === "static-incompatible" ? renderStaticIncompatible(bump, step.apiDiff) : render(step.verdict);
 }
 
+function renderCombined(combined: CombinedResult): string {
+  switch (combined.kind) {
+    case "skipped":
+      return "_Combined run skipped (`test-combined-bump: false`) — each bump above was only tested in isolation; an interaction between them wouldn't be caught by that alone._";
+    case "passed":
+      return "✅ All bumps together, exactly as this PR applies them, pass the real test suite.";
+    case "failed":
+      return (
+        `❌ All bumps together FAIL the real test suite (exit ${combined.exitCode}) — even if every bump ` +
+        "passed in isolation above, this specific combination does not work.\n\n```\n" +
+        `${combined.output.slice(0, 4000)}\n\`\`\``
+      );
+  }
+}
+
+/**
+ * Runs an IndependentBumps PR (see extractBump.ts): each bump tested in
+ * isolation against a SHARED base-ref checkout — prepareWorkspace's
+ * control guard means that checkout already holds every OTHER package at
+ * its pre-bump version, so isolation needs no extra work beyond calling
+ * runCompatStep once per bump — plus, unless disabled, one more run
+ * against a SEPARATE head-ref checkout (every bump applied at once, as
+ * the PR actually committed it) to catch an interaction bug isolation
+ * structurally cannot see.
+ */
+async function runIndependentBumpsStep(
+  options: RunGithubPipelineOptions,
+  bumpResult: IndependentBumps,
+): Promise<{ results: Array<{ bump: Bump; step: CompatStepResult }>; combined: CombinedResult }> {
+  const workspace = await prepareWorkspace({
+    repoDir: options.repoDir,
+    baseRef: options.baseRef,
+    packageJsonPath: bumpResult.packageJsonPath,
+  });
+
+  let results: Array<{ bump: Bump; step: CompatStepResult }>;
+  try {
+    const appDir = path.join(workspace.dir, path.dirname(bumpResult.packageJsonPath));
+    results = await Promise.all(
+      bumpResult.bumps.map(async (bump) => ({
+        bump,
+        step: await runCompatStep(appDir, bump, { testCommand: options.testCommand, testScript: options.testScript }),
+      })),
+    );
+  } finally {
+    await workspace.cleanup();
+  }
+
+  const includeCombined = options.testCombinedBump ?? true;
+  let combined: CombinedResult = { kind: "skipped" };
+  if (includeCombined) {
+    const headWorkspace = await prepareWorkspace({
+      repoDir: options.repoDir,
+      baseRef: options.headRef,
+      packageJsonPath: bumpResult.packageJsonPath,
+    });
+    try {
+      const headAppDir = path.join(headWorkspace.dir, path.dirname(bumpResult.packageJsonPath));
+      const combinedResult = await runCombinedTest({
+        appDir: headAppDir,
+        packageManager: headWorkspace.packageManager,
+        testCommand: options.testCommand,
+        testScript: options.testScript,
+      });
+      combined = combinedResult.passed
+        ? { kind: "passed", output: combinedResult.output }
+        : { kind: "failed", output: combinedResult.output, exitCode: combinedResult.exitCode };
+    } finally {
+      await headWorkspace.cleanup();
+    }
+  }
+
+  return { results, combined };
+}
+
 /**
  * Runs the full core pipeline (extractBump -> prepareWorkspace -> runCompat
  * -> interpret -> render) against a prepared git checkout and reports the
@@ -339,6 +441,54 @@ export async function runGithubPipeline(
     }
 
     return { status: "cross-file-verdict", bump: bumpResult, results, merged };
+  }
+
+  if (isIndependentBumps(bumpResult)) {
+    const { results, combined } = await runIndependentBumpsStep(options, bumpResult);
+
+    const lines: string[] = [
+      `### packdev compat — ${results.length} packages bumped to DIFFERING target versions in one PR`,
+      "",
+      "Each bump below is tested in isolation (every other package held at its pre-bump version) — packdev's `--group` can only pin companions to the SAME version, which doesn't apply here.",
+      "",
+    ];
+    for (const { bump, step } of results) {
+      lines.push(`#### \`${bump.name}\` \`${bump.fromVersion}\` → \`${bump.toVersion}\``);
+      lines.push("");
+      lines.push(renderStep(step, bump));
+      lines.push("");
+    }
+    lines.push("#### Combined — all bumps together, as this PR actually applies them");
+    lines.push("");
+    lines.push(renderCombined(combined));
+    const body = `${COMMENT_MARKER}\n${lines.join("\n")}`;
+
+    await options.github.upsertComment({ marker: COMMENT_MARKER, body });
+
+    const stepConclusions = results.map((r) => checkConclusionForStep(r.step));
+    const combinedConclusion: CheckConclusion = combined.kind === "failed" ? "failure" : "success";
+    const conclusion = worstConclusion([...stepConclusions, combinedConclusion]);
+
+    await options.github.createCheckRun({
+      name: "packdev compat",
+      conclusion,
+      title: `${results.length} differing-version bumps: ${conclusion}`,
+      summary: body,
+    });
+
+    // Auto-merge requires every isolated bump to genuinely pass AND (when
+    // run) the combined state to not fail — a skipped combined run never
+    // blocks merge on its own; that's the cost/coverage tradeoff the user
+    // opted into via testCombinedBump: false.
+    const allIsolatedPassed = results.every((r) => r.step.kind === "verdict" && isAutoMergeEligible(r.step.verdict));
+    const combinedOk = combined.kind !== "failed";
+    let merged = false;
+    if (options.autoMerge && allIsolatedPassed && combinedOk) {
+      await options.github.mergePullRequest();
+      merged = true;
+    }
+
+    return { status: "independent-verdict", bump: bumpResult, results, combined, merged };
   }
 
   const bump = bumpResult;

@@ -69,6 +69,8 @@ async function runOnce(): Promise<void> {
     ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
   const packageJsonPath = env("PACKAGE_JSON_PATH");
+  const testCombinedBumpInput = env("TEST_COMBINED_BUMP");
+  const testCombinedBump = testCombinedBumpInput !== undefined ? testCombinedBumpInput === "true" : undefined;
 
   const octokit = githubApi.getOctokit(token);
   const prSource = createOctokitPullRequestSource({ octokit, owner, repo });
@@ -86,6 +88,7 @@ async function runOnce(): Promise<void> {
     autoMerge,
     brain,
     ...(packageJsonPath ? { packageJsonPath } : {}),
+    ...(testCombinedBump !== undefined ? { testCombinedBump } : {}),
   });
 
   for (const { pr, result: prResult } of result.processed) {
@@ -105,6 +108,14 @@ async function runOnce(): Promise<void> {
       console.log(
         `PR #${pr.number}: cross-file — ${prResult.bump.name} ${prResult.bump.toVersion} across ` +
           `${prResult.results.length} apps [${kinds}] (merged: ${prResult.merged})`,
+      );
+    } else if (prResult.status === "independent-verdict") {
+      const kinds = prResult.results
+        .map((r) => (r.step.kind === "static-incompatible" ? "STATIC_INCOMPATIBLE" : r.step.verdict.kind))
+        .join(", ");
+      console.log(
+        `PR #${pr.number}: independent bumps — ${prResult.results.length} packages [${kinds}], ` +
+          `combined: ${prResult.combined.kind} (merged: ${prResult.merged})`,
       );
     }
   }

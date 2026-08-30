@@ -158,15 +158,44 @@ test("runGithubPipeline: actor not in allowedActors -> skipped-actor, zero GitHu
   }
 });
 
-test("runGithubPipeline: grouped bump -> unsupported-bump, posts a comment + neutral check run, no compat run attempted", async () => {
-  const { repoDir, cleanup } = await makeRepo(
-    { "is-odd": "3.0.0", "is-number": "6.0.0" },
-    { "is-odd": "3.0.1", "is-number": "7.0.0" },
-  );
+test("runGithubPipeline: same-file bump across MULTIPLE package.json files stays unsupported-bump (too compound a shape for v1)", async () => {
+  const monorepoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-pipeline-multi-file-"));
   try {
+    await git(monorepoDir, ["init", "-q"]);
+    await git(monorepoDir, ["config", "user.email", "test@test.local"]);
+    await git(monorepoDir, ["config", "user.name", "test"]);
+    await writeFile(
+      path.join(monorepoDir, "package.json"),
+      JSON.stringify({ name: "root", version: "1.0.0", private: true, workspaces: ["packages/*"] }, null, 2),
+    );
+    await mkdir(path.join(monorepoDir, "packages", "a"), { recursive: true });
+    await mkdir(path.join(monorepoDir, "packages", "b"), { recursive: true });
+    await writeFile(
+      path.join(monorepoDir, "packages", "a", "package.json"),
+      JSON.stringify({ name: "@fixture/a", version: "1.0.0", dependencies: { "is-odd": "3.0.0" } }, null, 2),
+    );
+    await writeFile(
+      path.join(monorepoDir, "packages", "b", "package.json"),
+      JSON.stringify({ name: "@fixture/b", version: "1.0.0", dependencies: { "is-number": "6.0.0" } }, null, 2),
+    );
+    await git(monorepoDir, ["add", "-A"]);
+    await git(monorepoDir, ["commit", "-q", "-m", "base"]);
+    await git(monorepoDir, ["branch", "base"]);
+
+    await writeFile(
+      path.join(monorepoDir, "packages", "a", "package.json"),
+      JSON.stringify({ name: "@fixture/a", version: "1.0.0", dependencies: { "is-odd": "3.0.1" } }, null, 2),
+    );
+    await writeFile(
+      path.join(monorepoDir, "packages", "b", "package.json"),
+      JSON.stringify({ name: "@fixture/b", version: "1.0.0", dependencies: { "is-number": "7.0.0" } }, null, 2),
+    );
+    await git(monorepoDir, ["add", "-A"]);
+    await git(monorepoDir, ["commit", "-q", "-m", "unrelated bumps in two files"]);
+
     const github = fakeGitHubOps();
     const result = await runGithubPipeline({
-      repoDir,
+      repoDir: monorepoDir,
       baseRef: "base",
       headRef: "HEAD",
       actor: "dependabot[bot]",
@@ -180,9 +209,89 @@ test("runGithubPipeline: grouped bump -> unsupported-bump, posts a comment + neu
     assert.equal(github.checkRuns.length, 1);
     assert.equal(github.checkRuns[0]!.conclusion, "neutral");
   } finally {
-    await cleanup();
+    await rm(monorepoDir, { recursive: true, force: true });
   }
 });
+
+test(
+  "runGithubPipeline: same-file bump with DIFFERING target versions -> independent-verdict, each bump tested in isolation plus a real combined run",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, cleanup } = await makeRepo(
+      // commander has zero deps of its own, unlike is-number (which is-odd
+      // itself depends on internally) — picking two genuinely unrelated
+      // packages avoids a real duplicate-copy regression the isolation
+      // sandbox would otherwise (correctly!) flag, which isn't what this
+      // test is exercising.
+      { "is-odd": "3.0.0", commander: "11.0.0" },
+      { "is-odd": "3.0.1", commander: "11.1.0" },
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "const isOdd=require(\'is-odd\'); const { Command } = require(\'commander\'); ' +
+          "if(isOdd(3)!==true) process.exit(1); if(typeof Command!=='function') process.exit(1);\"",
+        github,
+      });
+
+      assert.equal(result.status, "independent-verdict");
+      if (result.status === "independent-verdict") {
+        assert.equal(result.results.length, 2);
+        for (const { step } of result.results) {
+          assert.equal(step.kind, "verdict");
+          if (step.kind === "verdict") assert.equal(step.verdict.kind, "PASSED");
+        }
+        assert.equal(result.combined.kind, "passed");
+        assert.equal(result.merged, false);
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+      assert.match(github.comments[0]!.body, /DIFFERING target versions/);
+      assert.match(github.comments[0]!.body, /Combined — all bumps together/);
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+test(
+  "runGithubPipeline: independent bumps with testCombinedBump: false -> combined run is skipped, doesn't block merge",
+  { timeout: 120_000 },
+  async () => {
+    const { repoDir, cleanup } = await makeRepo(
+      { "is-odd": "3.0.0", commander: "11.0.0" },
+      { "is-odd": "3.0.1", commander: "11.1.0" },
+    );
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand:
+          'node -e "const isOdd=require(\'is-odd\'); const { Command } = require(\'commander\'); ' +
+          "if(isOdd(3)!==true) process.exit(1); if(typeof Command!=='function') process.exit(1);\"",
+        github,
+        testCombinedBump: false,
+        autoMerge: true,
+      });
+
+      assert.equal(result.status, "independent-verdict");
+      if (result.status === "independent-verdict") {
+        assert.equal(result.combined.kind, "skipped");
+        assert.equal(result.merged, true, "a skipped combined run must not block auto-merge");
+      }
+      assert.match(github.comments[0]!.body, /Combined run skipped/);
+    } finally {
+      await cleanup();
+    }
+  },
+);
 
 test(
   "runGithubPipeline: single bump, PASSED, autoMerge off by default -> success check, no merge call",
