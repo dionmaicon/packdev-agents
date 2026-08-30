@@ -4,6 +4,8 @@ import { mkdtemp, rm, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { buildSandboxEnv } from "./childEnv.js";
+
 const execFileAsync = promisify(execFile);
 
 export type PackageManagerName = "npm" | "yarn" | "pnpm";
@@ -60,24 +62,78 @@ export async function detectPackageManager(
   return "npm";
 }
 
-/** Exported for the same reason as detectPackageManager: unit test the frozen-lockfile-vs-not branching directly. */
+/**
+ * Yarn classic (v1) runs install scripts by default and needs the
+ * `--ignore-scripts` flag told to it explicitly (confirmed empirically).
+ * Yarn Berry (v2+) has NO such flag at all — passing it is a hard CLI
+ * syntax error that aborts the entire install, breaking every Berry repo
+ * this tool would otherwise work on. Berry also already disables build
+ * scripts by DEFAULT (confirmed empirically: "lists build scripts, but
+ * all build scripts have been disabled" with no flag/config at all), so
+ * the flag would be pure downside there — not a defense we're giving up.
+ * Prefers package.json's "packageManager" field (exact version, no
+ * process spawn needed) and falls back to `yarn --version`; if neither
+ * resolves, treats it as "don't add the flag" — Berry's already safe by
+ * default, so failing to detect only leaves a residual gap on classic v1
+ * with an unparseable version output, not a functional break for anyone.
+ */
+async function yarnNeedsIgnoreScriptsFlag(dir: string, packageJsonPath: string): Promise<boolean> {
+  try {
+    const raw = await readFile(path.join(dir, packageJsonPath), "utf8");
+    const pkg = JSON.parse(raw) as { packageManager?: string };
+    const match = pkg.packageManager ? /^yarn@(\d+)\./.exec(pkg.packageManager) : null;
+    if (match) return Number(match[1]) < 2;
+  } catch {
+    // fall through to spawning `yarn --version`
+  }
+
+  try {
+    const { stdout } = await execFileAsync("yarn", ["--version"]);
+    const match = /^(\d+)\./.exec(stdout.trim());
+    if (match) return Number(match[1]) < 2;
+  } catch {
+    // yarn not on PATH, or version unparseable — see doc comment above
+  }
+
+  return false;
+}
+
+/**
+ * --ignore-scripts (npm/pnpm always; yarn only when classic v1 — see
+ * yarnNeedsIgnoreScriptsFlag) is load-bearing, not an optimization: this
+ * install runs whatever version of whatever package a PR's
+ * package.json/lockfile says, and package.json content is exactly what an
+ * attacker-controlled bump PR gets to write. Without it, a malicious
+ * postinstall/preinstall script runs with the full permissions of the CI
+ * runner (or self-hosted host) the moment this function is called — a
+ * complete RCE primitive gated only on getting a compromised version
+ * published and bumped to. Real npm/yarn/pnpm scripts a legitimate app
+ * needs (codegen, native builds) still run fine; they just don't run HERE,
+ * inside the untrusted-content install this repo performs on the app's
+ * behalf.
+ */
 export async function installCommand(
   packageManager: PackageManagerName,
   dir: string,
+  packageJsonPath = "package.json",
 ): Promise<{ command: string; args: string[] }> {
   switch (packageManager) {
     case "npm":
       return (await exists(path.join(dir, "package-lock.json")))
-        ? { command: "npm", args: ["ci", "--no-audit", "--no-fund"] }
-        : { command: "npm", args: ["install", "--no-audit", "--no-fund"] };
-    case "yarn":
+        ? { command: "npm", args: ["ci", "--no-audit", "--no-fund", "--ignore-scripts"] }
+        : { command: "npm", args: ["install", "--no-audit", "--no-fund", "--ignore-scripts"] };
+    case "yarn": {
+      const ignoreScriptsArgs = (await yarnNeedsIgnoreScriptsFlag(dir, packageJsonPath))
+        ? ["--ignore-scripts"]
+        : [];
       return (await exists(path.join(dir, "yarn.lock")))
-        ? { command: "yarn", args: ["install", "--frozen-lockfile"] }
-        : { command: "yarn", args: ["install"] };
+        ? { command: "yarn", args: ["install", "--frozen-lockfile", ...ignoreScriptsArgs] }
+        : { command: "yarn", args: ["install", ...ignoreScriptsArgs] };
+    }
     case "pnpm":
       return (await exists(path.join(dir, "pnpm-lock.yaml")))
-        ? { command: "pnpm", args: ["install", "--frozen-lockfile"] }
-        : { command: "pnpm", args: ["install"] };
+        ? { command: "pnpm", args: ["install", "--frozen-lockfile", "--ignore-scripts"] }
+        : { command: "pnpm", args: ["install", "--ignore-scripts"] };
   }
 }
 
@@ -121,11 +177,12 @@ export async function prepareWorkspace(
     }
 
     const packageManager = await detectPackageManager(dir, packageJsonPath);
-    const { command, args } = await installCommand(packageManager, dir);
+    const { command, args } = await installCommand(packageManager, dir, packageJsonPath);
 
     await execFileAsync(command, args, {
       cwd: dir,
       maxBuffer: 200 * 1024 * 1024,
+      env: buildSandboxEnv(),
     });
 
     return { dir, packageManager, cleanup };
