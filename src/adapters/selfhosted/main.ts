@@ -55,7 +55,14 @@ async function runOnce(): Promise<void> {
   const remoteUrl = env("REMOTE_URL") ?? `https://github.com/${owner}/${repo}.git`;
   const cloneDir = env("CLONE_DIR") ?? "./.packdev-agents/repo";
   const statePath = env("STATE_PATH") ?? "./.packdev-agents/state.json";
-  const testCommand = requireEnv("TEST_COMMAND");
+  const testCommand = env("TEST_COMMAND");
+  const testScript = env("TEST_SCRIPT");
+  if (!testCommand && !testScript) {
+    throw new Error('Exactly one of TEST_COMMAND/TEST_SCRIPT env vars is required, got neither.');
+  }
+  if (testCommand && testScript) {
+    throw new Error("TEST_COMMAND and TEST_SCRIPT are mutually exclusive, got both.");
+  }
   const autoMerge = env("AUTO_MERGE") === "true";
   const allowedActorsInput = env("ALLOWED_ACTORS");
   const allowedActors = allowedActorsInput
@@ -71,7 +78,7 @@ async function runOnce(): Promise<void> {
     cloneDir,
     remoteUrl,
     statePath,
-    testCommand,
+    ...(testScript ? { testScript } : { testCommand }),
     prSource,
     githubOpsFor: (pr) =>
       createOctokitOps({ octokit, owner, repo, prNumber: pr.number, headSha: pr.headSha }),

@@ -56,7 +56,15 @@ export interface RunGithubPipelineOptions {
   headRef: string;
   /** The PR author's login, e.g. from the pull_request webhook payload's `pull_request.user.login`. */
   actor: string;
-  testCommand: string;
+  /**
+   * Exactly one of testCommand/testScript is required — see
+   * runCompat.ts's RunCompatOptions doc comment for why testScript is
+   * usually the better choice (it's what lets packdev's own harness-
+   * caveat detection actually see the app's real test script, instead of
+   * being hidden behind an "npm test" indirection).
+   */
+  testCommand?: string | undefined;
+  testScript?: string | undefined;
   github: GitHubOps;
   /**
    * Optional, and usually not needed: an explicit override narrowing
@@ -128,6 +136,40 @@ function checkTitleFor(verdict: Verdict, bump: Bump): string {
 }
 
 /**
+ * True only for a CONFIDENT, NEW regression: a symbol missing from the
+ * candidate's exports, with no dynamic/namespace usage that could have
+ * hidden the real export list, AND the control does NOT confidently show
+ * the same failure already.
+ *
+ * That last condition is the fix for a real bug, found live: a symbol
+ * that's ALSO missing at the control (currently-installed) version is a
+ * PRE-EXISTING app issue, not a regression this bump introduced — is-odd
+ * has never exported a named "isOdd" at any version, and a real test PR
+ * bumping 3.0.0 -> 3.0.1 was reported "the bump is incompatible with this
+ * app", which was false: the app was equally broken before the bump.
+ * Mirrors HARNESS_BROKEN's precedence in interpret() (control fails ->
+ * never blame the candidate), which this static path had no equivalent
+ * of until this fix. `controlEntry?.apiCompatible !== false` deliberately
+ * treats BOTH `true` (control genuinely has the symbol) and the
+ * unverifiable tri-state `null` as "not confidently broken already" —
+ * only a CONFIRMED `false` control result rules this out, since a `null`
+ * control can't be used to excuse a confident candidate failure either.
+ * Exported standalone (no process spawning needed) so this exact
+ * regression can be pinned down with plain fixture objects.
+ */
+export function isConfidentStaticRegression(
+  candidateEntry: { apiCompatible: boolean | null } | undefined,
+  candidateHasDynamicUsage: boolean,
+  controlEntry: { apiCompatible: boolean | null } | undefined,
+): boolean {
+  return (
+    candidateEntry?.apiCompatible === false &&
+    !candidateHasDynamicUsage &&
+    controlEntry?.apiCompatible !== false
+  );
+}
+
+/**
  * The static-prefilter-then-compat logic for ONE bump against an already-
  * prepared app directory. Pulled out of runGithubPipeline so a cross-file
  * bump (the SAME package bumped in multiple independent apps — see
@@ -138,29 +180,27 @@ function checkTitleFor(verdict: Verdict, bump: Bump): string {
 async function runCompatStep(
   appDir: string,
   bump: Bump,
-  testCommand: string,
+  test: { testCommand?: string | undefined; testScript?: string | undefined },
 ): Promise<CompatStepResult> {
   // Static, no install — cheap enough to always run first. Only skips the
-  // expensive sandboxed compat run on a CONFIDENT negative: a symbol the
-  // app statically imports is missing from the candidate's exports, AND no
-  // dynamic/namespace usage exists that could have hidden the real export
-  // list (hasDynamicUsage true, or a tri-state null apiCompatible, both
-  // fall through to the real compat run unchanged — see
-  // docs/architecture.md). Skipped entirely for a grouped bump: api-diff
-  // has no --group equivalent, and checking only the primary package's
-  // static usage in isolation doesn't represent what the PR actually
-  // changed (its companions).
+  // expensive sandboxed compat run on a CONFIDENT, NEW regression (see
+  // isConfidentStaticRegression above) — never on a pre-existing issue the
+  // control already has, and never with dynamic/namespace usage in play
+  // (hasDynamicUsage true, or a tri-state null apiCompatible, both fall
+  // through to the real compat run unchanged — see docs/architecture.md).
+  // Skipped entirely for a grouped bump: api-diff has no --group
+  // equivalent, and checking only the primary package's static usage in
+  // isolation doesn't represent what the PR actually changed (its
+  // companions).
   if (!bump.group) {
-    const apiDiffResult = await runApiDiff({
-      appDir,
-      packageName: bump.name,
-      toVersion: bump.toVersion,
-    });
-    const candidateEntry = apiDiffResult.report.versions.find((v) => v.version === bump.toVersion);
-    const confidentNegative =
-      candidateEntry?.apiCompatible === false && !apiDiffResult.report.hasDynamicUsage;
-    if (confidentNegative) {
-      return { kind: "static-incompatible", apiDiff: apiDiffResult.report };
+    const [candidateResult, controlResult] = await Promise.all([
+      runApiDiff({ appDir, packageName: bump.name, toVersion: bump.toVersion }),
+      runApiDiff({ appDir, packageName: bump.name, toVersion: bump.fromVersion }),
+    ]);
+    const candidateEntry = candidateResult.report.versions.find((v) => v.version === bump.toVersion);
+    const controlEntry = controlResult.report.versions.find((v) => v.version === bump.fromVersion);
+    if (isConfidentStaticRegression(candidateEntry, candidateResult.report.hasDynamicUsage, controlEntry)) {
+      return { kind: "static-incompatible", apiDiff: candidateResult.report };
     }
   }
 
@@ -168,7 +208,7 @@ async function runCompatStep(
     appDir,
     packageName: bump.name,
     versions: [bump.toVersion],
-    testCommand,
+    ...(test.testScript ? { testScript: test.testScript } : { testCommand: test.testCommand }),
     extraArgs: [
       // Duplicate-copy regressions (DI singletons, instanceof checks) are a
       // real, distinct failure mode from an incompatible API —
@@ -204,6 +244,13 @@ function renderStep(step: CompatStepResult, bump: Bump): string {
 export async function runGithubPipeline(
   options: RunGithubPipelineOptions,
 ): Promise<RunGithubPipelineResult> {
+  if (!options.testCommand && !options.testScript) {
+    throw new Error("runGithubPipeline: exactly one of testCommand/testScript is required, got neither");
+  }
+  if (options.testCommand && options.testScript) {
+    throw new Error("runGithubPipeline: testCommand and testScript are mutually exclusive, got both");
+  }
+
   const allowedActors = options.allowedActors ?? DEFAULT_ALLOWED_ACTORS;
   if (!allowedActors.includes(options.actor)) {
     return { status: "skipped-actor", actor: options.actor };
@@ -252,7 +299,7 @@ export async function runGithubPipeline(
       results = await Promise.all(
         bumpResult.bumps.map(async (bump) => {
           const appDir = path.join(workspace.dir, path.dirname(bump.packageJsonPath));
-          const step = await runCompatStep(appDir, bump, options.testCommand);
+          const step = await runCompatStep(appDir, bump, { testCommand: options.testCommand, testScript: options.testScript });
           return { bump, step };
         }),
       );
@@ -317,7 +364,7 @@ export async function runGithubPipeline(
 
   let stepResult: CompatStepResult;
   try {
-    stepResult = await runCompatStep(appDir, bump, options.testCommand);
+    stepResult = await runCompatStep(appDir, bump, { testCommand: options.testCommand, testScript: options.testScript });
   } finally {
     await workspace.cleanup();
   }

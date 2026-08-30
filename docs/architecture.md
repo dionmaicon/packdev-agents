@@ -236,10 +236,12 @@ from a real `compat` run, so this is deliberately its OWN
 rather than forcing a report shape that never ran a real test into the
 verdict machinery that assumes one did.
 
-Short-circuits — skips `compat` entirely — only on a CONFIDENT negative:
+Short-circuits — skips `compat` entirely — only on a CONFIDENT, NEW
+regression (`isConfidentStaticRegression` in pipeline.ts):
 
 ```
 candidate.apiCompatible === false && !report.hasDynamicUsage
+  && control.apiCompatible !== false
 ```
 
 `apiCompatible` is tri-state (`boolean | null`): `null` means "could not
@@ -251,6 +253,19 @@ under-reports in that case, so a `true`/`false` conclusion from it can't be
 trusted either way. Every other combination (compatible, dynamic usage, or
 unresolved) falls through to the real `compat` run unchanged — this pre-filter
 only ever short-circuits toward a confident rejection, never toward a pass.
+
+**The control check (`control.apiCompatible !== false`) is a real bug fix,
+found live**, not part of the original design: `runApiDiff` is called for
+BOTH `bump.toVersion` and `bump.fromVersion` (the currently-installed
+control), and a symbol confidently missing at BOTH is a PRE-EXISTING app
+issue, not a regression this bump introduced — is-odd has never exported a
+named `isOdd` at any version, and a real test PR bumping 3.0.0 -> 3.0.1
+was reported "the bump is incompatible with this app", which was false:
+the app was equally broken before the bump. Mirrors `HARNESS_BROKEN`'s
+precedence in `interpret()` (control fails -> never blame the candidate),
+which this static path had no equivalent of until this fix. A `null`
+control (unverifiable) does NOT excuse a confident candidate failure —
+only a confirmed `false` control result does.
 
 ### 3. `runCompat(workspace, bump) -> CompatReport`
 
@@ -302,25 +317,28 @@ transpile-only jest transform (`ts-jest` `isolatedModules`, `babel-jest`,
 incompatibility. Caveat text is always surfaced verbatim in the PR comment
 and always blocks auto-merge.
 
-**Known limitation, found live testing this:** caveat detection only works
-when `test-command` IS the app's literal underlying invocation (e.g.
+**Fixed, found live testing this:** caveat detection only works when the
+command packdev sees IS the app's literal underlying invocation (e.g.
 `tsc --noEmit`) — packdev's own `analyzeTestHarness` pattern-matches the
 literal `--test` string it's given (an anchored regex on the whole
-command), so it can never see through an indirection layer. Since this
-Action's `test-command` input is passed straight through as `--test`, and
-the common real value is `"npm test"` (an indirection, not the app's
-actual script body), `TYPE_CHECK_ONLY`/`TRANSPILE_ONLY`/`PASS_WITH_NO_TESTS`
-will never fire for any app using this Action with a plain `npm test`
-config — confirmed live: identical bump, identical app, `testCommandCaveats:
-[]` with `test-command: "npm test"`, but the real `TYPE_CHECK_ONLY` caveat
-with `test-command: "npx tsc --noEmit"` (the app's literal script body).
-packdev's own CLI already has the right mechanism for this —
-`--test-script <name>` resolves the NAMED script from each target's own
-package.json (both to run it and to analyze its real body for caveats,
-see `resolveHarnessCommand` in packdev's source) — but `runCompat.ts` only
-ever uses `--test`, never `--test-script`. Wiring that through (accepting
-a script name in addition to a literal command) is future work, not yet
-built.
+command), so it can never see through an indirection layer. `test-command`
+passed straight through as `--test`, with the common real value `"npm
+test"` (an indirection, not the app's actual script body), meant
+`TYPE_CHECK_ONLY`/`TRANSPILE_ONLY`/`PASS_WITH_NO_TESTS` could never fire —
+confirmed live: identical bump, identical app, `testCommandCaveats: []`
+with `test-command: "npm test"`, but the real `TYPE_CHECK_ONLY` caveat
+with the literal command. `runCompat`/`runGithubPipeline` now also accept
+`testScript` (exactly one of `testCommand`/`testScript` required,
+mirroring packdev's own `--test`/`--test-script` mutual exclusivity) —
+packdev resolves the NAMED script from the target's own package.json,
+both to run it and to analyze its real body for caveats (see packdev's
+`resolveHarnessCommand`). The Action's `test-script` input exposes this;
+prefer it whenever `test-command` would just be a package-manager
+invocation of one named script (the common case) — `test-command` remains
+right for a genuinely custom multi-step command. Verified for real:
+identical fixture, `testCommand: "npm test"` -> `testCommandCaveats: []`,
+`testScript: "test"` -> the real `TYPE_CHECK_ONLY` caveat, in the same
+test run.
 
 If `api-diff` is run as a pre-check, `apiCompatible` is **tri-state**:
 `null` means "could not verify" and is never treated as either a pass or a

@@ -365,3 +365,126 @@ test(
     }
   },
 );
+
+test("runCompat: neither testCommand nor testScript given -> hard error", async () => {
+  await assert.rejects(
+    () => runCompat({ appDir: "/tmp", packageName: "some-pkg", versions: ["1.1.0"], binPathOverride: "/bin/true" }),
+    /exactly one of testCommand\/testScript is required, got neither/,
+  );
+});
+
+test("runCompat: both testCommand and testScript given -> hard error", async () => {
+  await assert.rejects(
+    () =>
+      runCompat({
+        appDir: "/tmp",
+        packageName: "some-pkg",
+        versions: ["1.1.0"],
+        testCommand: "npm test",
+        testScript: "test",
+        binPathOverride: "/bin/true",
+      }),
+    /testCommand and testScript are mutually exclusive, got both/,
+  );
+});
+
+test("runCompat: testScript is passed as --test-script, not --test", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "packdev-agents-fakebin-"));
+  try {
+    const report = minimalReport();
+    const binPath = await writeFakeBin(
+      dir,
+      `#!/usr/bin/env node\nprocess.stderr.write(JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(${JSON.stringify(
+        JSON.stringify(report),
+      )});\nprocess.exit(0);\n`,
+    );
+    const appDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-app-"));
+    try {
+      const result = await runCompat({
+        appDir,
+        packageName: "some-pkg",
+        versions: ["1.1.0"],
+        testScript: "test",
+        binPathOverride: binPath,
+      });
+      const argv = JSON.parse(result.stderr) as string[];
+      assert.ok(argv.includes("--test-script"));
+      assert.equal(argv[argv.indexOf("--test-script") + 1], "test");
+      assert.ok(!argv.includes("--test"));
+    } finally {
+      await rm(appDir, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "runCompat: testScript end-to-end — actually surfaces TYPE_CHECK_ONLY where testCommand \"npm test\" could not",
+  { timeout: 60_000 },
+  async () => {
+    // Real fix, found live: packdev's own harness-caveat detection
+    // pattern-matches the LITERAL --test string, so testCommand "npm
+    // test" can never see through the indirection to notice the app's
+    // real script is a bare `tsc --noEmit` — confirmed live on
+    // packdev-demo-nestjs (identical bump, identical app,
+    // testCommandCaveats: [] with "npm test" but the real TYPE_CHECK_ONLY
+    // caveat with the literal command). testScript is the fix: packdev
+    // resolves the NAMED script's own body itself.
+    const appDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-testscript-e2e-"));
+    try {
+      await mkdir(path.join(appDir, "src"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "tsconfig.json"),
+        JSON.stringify(
+          { compilerOptions: { target: "ES2021", module: "commonjs", outDir: "dist", strict: false }, include: ["src/**/*.ts"] },
+          null,
+          2,
+        ),
+      );
+      await writeFile(path.join(appDir, "src", "index.ts"), "export const x: number = 1;\n");
+      await writeFile(
+        path.join(appDir, "package.json"),
+        JSON.stringify(
+          {
+            name: "testscript-e2e-fixture",
+            version: "1.0.0",
+            scripts: { test: "npx tsc --noEmit" },
+            dependencies: { "is-odd": "3.0.0" },
+            devDependencies: { typescript: "^5.6.0" },
+          },
+          null,
+          2,
+        ),
+      );
+
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const execFileAsync = promisify(execFile);
+      await execFileAsync("npm", ["install", "--no-audit", "--no-fund"], { cwd: appDir });
+
+      const viaTestCommand = await runCompat({
+        appDir,
+        packageName: "is-odd",
+        versions: ["3.0.1"],
+        testCommand: "npm test",
+      });
+      assert.deepEqual(
+        viaTestCommand.report.testCommandCaveats,
+        [],
+        "the indirection through npm test should hide the caveat, confirming the bug this test guards against",
+      );
+
+      const viaTestScript = await runCompat({
+        appDir,
+        packageName: "is-odd",
+        versions: ["3.0.1"],
+        testScript: "test",
+      });
+      assert.equal(viaTestScript.report.testCommandCaveats.length, 1);
+      assert.equal(viaTestScript.report.testCommandCaveats[0]!.code, "TYPE_CHECK_ONLY");
+    } finally {
+      await rm(appDir, { recursive: true, force: true });
+    }
+  },
+);

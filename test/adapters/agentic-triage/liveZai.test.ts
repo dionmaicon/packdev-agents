@@ -34,7 +34,15 @@ const apiKey = await readZaiApiKey();
 
 test(
   "runAgenticTriage: LIVE against the real Z.ai API (glm-5.3-flash) — real packdev mcp + a genuinely different model family",
-  { timeout: 300_000, skip: apiKey ? false : "ZAI_API_KEY not set (env or .env) — skipping live model test" },
+  {
+    // Observed real range across multiple live runs: ~90s (5-6 tool
+    // calls) up to ~330s (7 tool calls, thorough investigation) — 300s
+    // genuinely timed out once. 600s gives real headroom without masking
+    // an actual hang (the agent loop's own maxTurns cap is the backstop
+    // against a truly runaway loop, not this timeout).
+    timeout: 600_000,
+    skip: apiKey ? false : "ZAI_API_KEY not set (env or .env) — skipping live model test",
+  },
   async () => {
     const appDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-triage-live-zai-"));
     try {

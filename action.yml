@@ -6,8 +6,24 @@ author: "dionmaicon"
 
 inputs:
   test-command:
-    description: "Command to run inside the sandboxed install to verify compatibility."
-    required: true
+    description: >-
+      Command to run inside the sandboxed install to verify compatibility.
+      Exactly one of test-command/test-script is required. Prefer
+      test-script whenever this would just be a package-manager
+      invocation of one named script (e.g. "npm test") — packdev's own
+      harness-caveat detection (a version that only type-checks or only
+      transpiles without type-checking) pattern-matches the LITERAL
+      command string, so it can never see through an "npm test"
+      indirection to the app's real script body. test-command remains
+      right for a genuinely custom multi-step command.
+    required: false
+  test-script:
+    description: >-
+      Name of the package.json script to run (e.g. "test") — packdev
+      resolves it from each target's own package.json, both to run it and
+      to analyze its real body for harness caveats. Exactly one of
+      test-command/test-script is required.
+    required: false
   github-token:
     description: "Token used to post the check run and PR comment. Needs pull-requests: write and checks: write."
     required: true
@@ -94,6 +110,7 @@ runs:
       run: node ${{ github.action_path }}/dist/adapters/github-action/main.js
       env:
         INPUT_TEST-COMMAND: ${{ inputs.test-command }}
+        INPUT_TEST-SCRIPT: ${{ inputs.test-script }}
         INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}
         INPUT_AUTO-MERGE: ${{ inputs.auto-merge }}
         INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}

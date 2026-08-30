@@ -645,14 +645,17 @@ async function makeRepoWithUsage(
 }
 
 test(
-  "runGithubPipeline: api-diff confident negative short-circuits — skips compat entirely, never auto-merge eligible",
+  "runGithubPipeline: a symbol missing at BOTH control and candidate is a pre-existing issue, NOT a bump regression — falls through to real compat instead of a false static-incompatible",
   { timeout: 60_000 },
   async () => {
-    // is-odd never had a named "isOdd" export at any 3.x version — a real,
-    // deterministic confident negative (see runApiDiff.test.ts). testCommand
-    // is deliberately something that WOULD pass if compat ran at all
-    // (a trivial `true`), so a success/PASSED outcome here would only be
-    // possible if the short-circuit failed to prevent compat from running.
+    // Real bug, found live: is-odd never had a named "isOdd" export at ANY
+    // 3.x version — control (3.0.0) is EQUALLY missing it, so this is not
+    // something the 3.0.0 -> 3.0.1 bump introduced. Before the fix, this
+    // exact fixture produced a false "the bump is incompatible with this
+    // app" — the app was already broken, unrelated to the bump.
+    // testCommand "true" never actually calls isOdd, so falling through to
+    // the real compat run correctly PASSES: proof the short-circuit no
+    // longer fires here, not a coincidence of a lenient test command.
     const { repoDir, cleanup } = await makeRepoWithUsage(
       { "is-odd": "3.0.0" },
       { "is-odd": "3.0.1" },
@@ -670,20 +673,11 @@ test(
         autoMerge: true,
       });
 
-      assert.equal(result.status, "static-incompatible");
-      if (result.status === "static-incompatible") {
-        assert.equal(result.bump.name, "is-odd");
-        assert.equal(result.apiDiff.hasDynamicUsage, false);
-        const candidate = result.apiDiff.versions.find((v) => v.version === "3.0.1");
-        assert.equal(candidate?.apiCompatible, false);
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "PASSED");
       }
-
-      assert.equal(github.comments.length, 1);
-      assert.match(github.comments[0]!.body, /Incompatible \(static\)/);
-      assert.match(github.comments[0]!.body, /isOdd/);
-      assert.equal(github.checkRuns.length, 1);
-      assert.equal(github.checkRuns[0]!.conclusion, "failure");
-      assert.equal(github.mergeCalls, 0);
+      assert.equal(github.mergeCalls, 1);
     } finally {
       await cleanup();
     }

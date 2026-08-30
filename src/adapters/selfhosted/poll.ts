@@ -10,7 +10,9 @@ export interface PollOptions {
   remoteUrl: string;
   /** Where seen-PR state (see state.ts) is persisted between polls/restarts. */
   statePath: string;
-  testCommand: string;
+  /** Exactly one of testCommand/testScript is required — see runGithubPipeline's doc comment. */
+  testCommand?: string | undefined;
+  testScript?: string | undefined;
   prSource: PullRequestSource;
   /** Builds the GitHubOps sink for a specific PR — needs the PR number and head SHA to address comments/checks at. */
   githubOpsFor: (pr: OpenBotPR) => GitHubOps;
@@ -68,7 +70,7 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
       baseRef: pr.baseSha,
       headRef: pr.headSha,
       actor: pr.actor,
-      testCommand: options.testCommand,
+      ...(options.testScript ? { testScript: options.testScript } : { testCommand: options.testCommand }),
       github: options.githubOpsFor(pr),
       allowedActors: options.allowedActors,
       autoMerge: options.autoMerge,

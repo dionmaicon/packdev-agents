@@ -17,7 +17,25 @@ export interface RunCompatOptions {
    * have installed the PRE-bump version for that control to mean anything).
    */
   versions: string[];
-  testCommand: string;
+  /**
+   * Exactly one of testCommand/testScript must be given, mirroring
+   * packdev's own CLI (`--test`/`--test-script` are mutually exclusive,
+   * one required). Prefer testScript whenever the "command" is really
+   * just a package-manager invocation of a named script (e.g. "npm test",
+   * "npm run test") — packdev's own harness-caveat detection
+   * (TYPE_CHECK_ONLY/TRANSPILE_ONLY/PASS_WITH_NO_TESTS) pattern-matches
+   * the LITERAL --test string via an anchored regex, so it can never see
+   * through an "npm test" indirection to notice the app's actual script
+   * is a bare `tsc --noEmit` — confirmed live: identical bump, identical
+   * app, testCommandCaveats: [] with testCommand "npm test", but the real
+   * TYPE_CHECK_ONLY caveat with testScript "test" (packdev resolves the
+   * named script's own body from the target's package.json, both to run
+   * it AND to analyze it — see packdev's resolveHarnessCommand). testCommand
+   * remains the right choice for a genuinely custom multi-step command
+   * that isn't just "run this one script".
+   */
+  testCommand?: string | undefined;
+  testScript?: string | undefined;
   registryUrl?: string | undefined;
   extraArgs?: string[] | undefined;
   /** Overrides CLI entry-point resolution. Test-only escape hatch. */
@@ -50,6 +68,15 @@ function isExecFileErrorLike(error: unknown): error is ExecFileErrorLike {
 export async function runCompat(
   options: RunCompatOptions,
 ): Promise<RunCompatResult> {
+  if (!options.testCommand && !options.testScript) {
+    throw new Error("runCompat: exactly one of testCommand/testScript is required, got neither");
+  }
+  if (options.testCommand && options.testScript) {
+    throw new Error(
+      "runCompat: testCommand and testScript are mutually exclusive, got both",
+    );
+  }
+
   const binPath = options.binPathOverride ?? (await resolvePackdevBinPath());
 
   const args = [
@@ -58,8 +85,7 @@ export async function runCompat(
     options.packageName,
     "--versions",
     options.versions.join(","),
-    "--test",
-    options.testCommand,
+    ...(options.testScript ? ["--test-script", options.testScript] : ["--test", options.testCommand!]),
     "--json",
     ...(options.registryUrl ? ["--registry", options.registryUrl] : []),
     ...(options.extraArgs ?? []),

@@ -43,7 +43,16 @@ async function run(): Promise<void> {
     return;
   }
 
-  const testCommand = core.getInput("test-command", { required: true });
+  const testCommandInput = core.getInput("test-command");
+  const testScriptInput = core.getInput("test-script");
+  if (!testCommandInput && !testScriptInput) {
+    core.setFailed('Exactly one of "test-command"/"test-script" is required, got neither.');
+    return;
+  }
+  if (testCommandInput && testScriptInput) {
+    core.setFailed('"test-command" and "test-script" are mutually exclusive, got both.');
+    return;
+  }
   const token = core.getInput("github-token", { required: true });
   const autoMerge = core.getBooleanInput("auto-merge");
   const failStepOnNonPass = core.getBooleanInput("fail-step-on-non-pass");
@@ -73,7 +82,7 @@ async function run(): Promise<void> {
     baseRef: pr.base.sha,
     headRef: pr.head.sha,
     actor: pr.user.login,
-    testCommand,
+    ...(testScriptInput ? { testScript: testScriptInput } : { testCommand: testCommandInput }),
     github: githubOps,
     allowedActors,
     autoMerge,
