@@ -318,6 +318,42 @@ test("extractBump: workspace: specifier bump is ignored (not a registry version)
   }
 });
 
+test("extractBump: bare \"*\" specifier is ignored, not resolved to a nonsensical \"0.0.0\" bump target (caught by Copilot review of the semver.validRange switch)", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: { lodash: "*" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: { lodash: "4.17.21" },
+    });
+    await commit(repoDir, "moved off *");
+
+    // semver.validRange("*") is genuinely non-null (it's a valid range —
+    // "any version"), so a naive validRange-only check would treat this
+    // as a real bump and resolve "*" to "0.0.0" via minVersion(). "*"
+    // needs an explicit exclusion on top of validRange, same as the old
+    // blacklist had.
+    const result = await extractBump({
+      repoDir,
+      baseRef: "base",
+      headRef: "HEAD",
+    });
+
+    assert.equal(isUnsupported(result), true);
+    if (isUnsupported(result)) {
+      assert.equal(result.bumps.length, 0);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
 test("extractBump: dist-tag specifier (\"latest\"/\"next\") is ignored, not a crash — real bug, found live: uncaught semver.minVersion throw took down the whole Action run", async () => {
   const repoDir = await makeRepo();
   try {
