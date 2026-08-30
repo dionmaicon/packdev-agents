@@ -75,7 +75,7 @@ export function createOctokitOps(config: OctokitOpsConfig): GitHubOps {
         });
       } catch (error) {
         console.error(
-          `createCheckRun failed (continuing without it — check runs require a GitHub App token): ${String(error)}`,
+          `createCheckRun failed (continuing without it): ${String(error)}`,
         );
       }
     },
