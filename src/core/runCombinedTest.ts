@@ -1,13 +1,14 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 
 import type { PackageManagerName } from "./prepareWorkspace.js";
 import { buildSandboxEnv } from "./childEnv.js";
 
-const execFileAsync = promisify(execFile);
-
 /** 5 minutes — matches the order of magnitude of agentLoop.ts's own request timeout, added after a real stuck-provider incident. */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+/** Grace period after SIGTERM before escalating to SIGKILL for anything that ignored it. */
+const KILL_GRACE_MS = 5000;
+/** Loose guard against runaway output, not a hard byte-exact cap. */
+const MAX_OUTPUT_CHARS = 200_000;
 
 export interface RunCombinedTestOptions {
   /** A workspace checked out at the PR's real HEAD ref — every independent bump applied at once, not held in isolation. */
@@ -16,12 +17,13 @@ export interface RunCombinedTestOptions {
   testCommand?: string | undefined;
   testScript?: string | undefined;
   /**
-   * Kills the test process if it hasn't finished by this point. Without
-   * this, a hanging test suite (an open server handle, a broken
-   * watch-mode invocation — real risks since the test command runs
-   * arbitrary, PR-influenced dependency behavior) hangs until GitHub
-   * Actions' own job-level timeout-minutes kills the whole job, with no
-   * graceful "stuck, not just slow" degradation. Defaults to 5 minutes.
+   * Kills the test process (and everything it spawned) if it hasn't
+   * finished by this point. Without this, a hanging test suite (an open
+   * server handle, a broken watch-mode invocation — real risks since the
+   * test command runs arbitrary, PR-influenced dependency behavior)
+   * hangs until GitHub Actions' own job-level timeout-minutes kills the
+   * whole job, with no graceful "stuck, not just slow" degradation.
+   * Defaults to 5 minutes.
    */
   timeoutMs?: number | undefined;
 }
@@ -33,10 +35,7 @@ export interface RunCombinedTestOptions {
  * kill, or a spawn failure like a missing binary) and says nothing
  * reliable about whether the bumps themselves work — mirrors
  * interpret.ts's HARNESS_BROKEN precedence (never blame the candidate
- * when the harness is what broke, not the code being tested). Previously
- * this collapsed both cases into one bucket (exitCode defaulting to 1),
- * which could falsely tell a PR "these bumps don't work together" when
- * the real cause was an environment problem.
+ * when the harness is what broke, not the code being tested).
  */
 export type RunCombinedTestResult =
   | { kind: "passed"; output: string }
@@ -53,6 +52,29 @@ export type RunCombinedTestResult =
  * each individually fine but conflict together — this answers that
  * different question by testing the PR's actual combined state as
  * committed.
+ *
+ * Spawns into a detached process GROUP and tracks its own timeout timer
+ * rather than using execFile's built-in `timeout` option — two real bugs
+ * that option has for this use case, both caught in review:
+ *
+ * 1. execFile's `timeout` only signals the immediate child it spawned.
+ *    For `testScript` that child is npm/yarn/pnpm, which itself shells
+ *    out to run the actual script body (an `sh -c` grandchild), which
+ *    can itself spawn further processes (a dev server, a watcher) —
+ *    none of which execFile's timeout ever reaches, so a hang could
+ *    survive "our own" timeout with grandchildren still holding the
+ *    stdout/stderr pipes open. `detached: true` puts the whole tree in
+ *    its own process group; `process.kill(-pid, signal)` (a negative
+ *    pid) on POSIX signals every process in that group at once.
+ * 2. execFile's timeout sets `killed: true` on its error, but a child
+ *    that catches SIGTERM and exits on its own with a real numeric exit
+ *    code reports THAT code with `signal` unset — a naive check of
+ *    `signal` (or `signal` before `killed`) then misclassifies a
+ *    genuine timeout as an ordinary test failure. Tracking our own
+ *    `timedOut` flag, set only by our own timer, sidesteps this
+ *    ambiguity entirely: it's true if and only if WE decided this took
+ *    too long, independent of how the child happened to react to being
+ *    signaled.
  */
 export async function runCombinedTest(
   options: RunCombinedTestOptions,
@@ -69,51 +91,72 @@ export async function runCombinedTest(
     : ["sh", "-c", options.testCommand!];
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  try {
-    const result = await execFileAsync(command!, args, {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+
+    const child = spawn(command!, args, {
       cwd: options.appDir,
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: timeoutMs,
-      // This runs the app's own test command/script against a workspace
-      // whose dependencies (including the bumped ones) were installed
-      // with scripts disabled by prepareWorkspace, but the running test
-      // process itself still shouldn't have GITHUB_TOKEN/brain API keys
-      // in its env — see childEnv.ts.
       env: buildSandboxEnv(),
+      // Windows has no process-group-kill equivalent via a negative pid
+      // — detached there just runs the child without a console window,
+      // and killGroup below falls back to signaling the direct child
+      // only, a known platform limitation this can't fully work around.
+      detached: process.platform !== "win32",
     });
-    return { kind: "passed", output: `${result.stdout}\n${result.stderr}`.trim() };
-  } catch (error) {
-    const asExecError = error as {
-      code?: number | string;
-      signal?: string | null;
-      killed?: boolean;
-      stdout?: string;
-      stderr?: string;
-      message?: string;
+
+    const killGroup = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
+      } catch {
+        // ESRCH etc — already gone, nothing to do.
+      }
     };
-    const output = `${asExecError.stdout ?? ""}\n${asExecError.stderr ?? ""}`.trim();
 
-    // A signal-terminated process (our own timeout kill, an OOM kill, a
-    // crash) never reported a real exit code — there's no genuine
-    // pass/fail verdict to extract from it.
-    if (asExecError.signal) {
-      const reason = asExecError.killed
-        ? `the test process was killed after exceeding the ${timeoutMs}ms timeout (signal ${asExecError.signal})`
-        : `the test process was terminated by signal ${asExecError.signal}`;
-      return { kind: "error", message: reason, output };
-    }
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      killGroup("SIGTERM");
+      const killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
+      killTimer.unref();
+    }, timeoutMs);
+    timeoutTimer.unref();
 
-    // A string error code here (e.g. "ENOENT") means the process never
-    // actually started — a spawn failure (missing binary, permissions),
-    // not a test result.
-    if (typeof asExecError.code !== "number") {
-      return {
-        kind: "error",
-        message: asExecError.message ?? `spawn failed: ${String(asExecError.code ?? "unknown error")}`,
-        output,
-      };
-    }
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < MAX_OUTPUT_CHARS) stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < MAX_OUTPUT_CHARS) stderr += chunk.toString();
+    });
 
-    return { kind: "failed", exitCode: asExecError.code, output };
-  }
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      resolve({ kind: "error", message: error.message, output: `${stdout}\n${stderr}`.trim() });
+    });
+
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      const output = `${stdout}\n${stderr}`.trim();
+
+      if (timedOut) {
+        resolve({
+          kind: "error",
+          message: `the test process (and its process group) was killed after exceeding the ${timeoutMs}ms timeout`,
+          output,
+        });
+        return;
+      }
+      if (signal) {
+        resolve({ kind: "error", message: `the test process was terminated by signal ${signal}`, output });
+        return;
+      }
+      resolve(code === 0 ? { kind: "passed", output } : { kind: "failed", exitCode: code ?? 1, output });
+    });
+  });
 }

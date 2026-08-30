@@ -107,10 +107,28 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
         ...(options.testCombinedBump !== undefined ? { testCombinedBump: options.testCombinedBump } : {}),
       });
 
-      processed.push({ pr, result });
-
+      // Mutate `state` and persist BEFORE pushing to `processed` — if
+      // saveSeenState throws (a transient disk error), the mutation is
+      // rolled back before the catch below runs. Getting this order
+      // backwards was a real bug caught in review: with the mutation and
+      // push happening first, a failed save still left the in-memory
+      // `state` object holding this PR's new SHA, so a LATER PR's
+      // successful save would serialize that stale mutation to disk
+      // anyway — silently marking a PR "seen" despite its own save
+      // failing, so it would never actually retry. The old ordering also
+      // let a PR appear in both `processed` and `failed` simultaneously,
+      // contradicting PollResult's contract that they're exclusive.
+      const previousSha = state[String(pr.number)];
       state[String(pr.number)] = pr.headSha;
-      await saveSeenState(options.statePath, state);
+      try {
+        await saveSeenState(options.statePath, state);
+      } catch (saveError) {
+        if (previousSha === undefined) delete state[String(pr.number)];
+        else state[String(pr.number)] = previousSha;
+        throw saveError;
+      }
+
+      processed.push({ pr, result });
     } catch (error) {
       failed.push({ pr, error });
     }
