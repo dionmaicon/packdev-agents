@@ -71,7 +71,7 @@ test(
 );
 
 test(
-  "runCombinedTest: a timeout kills the WHOLE process group, including a grandchild the test command spawns -- not just the direct child (real bug caught in review: execFile's own `timeout` option only signals the immediate child, leaving grandchildren like an npm/sh-spawned dev server running past the timeout)",
+  "runCombinedTest: a timeout kills the WHOLE process group, including a grandchild that IGNORES SIGTERM -- not just the direct child, and not just via the first signal (real bugs caught in review: execFile's own `timeout` only signals the immediate child, and a naive implementation can resolve before its own SIGKILL escalation runs, silently dropping it)",
   { timeout: 30_000 },
   async () => {
     const { dir, cleanup } = await makeDir();
@@ -80,11 +80,16 @@ test(
       // The grandchild is spawned WITHOUT `detached`, so it stays in the
       // same process group as its parent (the same "sh -c" tree
       // runCombinedTest itself spawns) -- exactly how a real npm/yarn/pnpm
-      // script spawning a dev server or watcher would behave. Its own
-      // command line embeds `marker` so a `pgrep -f` can find it directly
-      // by PID, independent of anything runCombinedTest reports.
+      // script spawning a dev server or watcher would behave. It also
+      // registers a no-op SIGTERM handler, so ONLY the SIGKILL escalation
+      // (not the initial SIGTERM) can actually kill it -- directly
+      // exercising the escalation-must-actually-run fix, not just the
+      // process-group-targeting fix. Its command line embeds `marker` so
+      // a `pgrep -f` can find it directly by PID, independent of
+      // anything runCombinedTest reports.
       const testCommand =
-        `node -e "require('child_process').spawn('node', ['-e', 'setInterval(()=>{},1000);//${marker}'], ` +
+        `node -e "require('child_process').spawn('node', ['-e', ` +
+        `'process.on(\\"SIGTERM\\",()=>{}); setInterval(()=>{},1000);//${marker}'], ` +
         `{stdio:'ignore'}); setInterval(()=>{}, 1000)"`;
 
       const result = await runCombinedTest({
@@ -95,20 +100,18 @@ test(
       });
       assert.equal(result.kind, "error");
 
-      // A plain `node -e "setInterval(...)"` grandchild has no SIGTERM
-      // handler, so it dies immediately once actually signaled -- if the
-      // process GROUP kill worked, pgrep should already find nothing
-      // shortly after runCombinedTest resolves. A short poll absorbs
-      // scheduling jitter without masking a real leak (which would still
-      // show up after every retry).
+      // The grandchild ignores SIGTERM, so it can ONLY have died via the
+      // SIGKILL escalation -- if runCombinedTest resolved without that
+      // escalation actually running (the exact bug caught in review:
+      // resolving on the direct child's `close` alone, before the grace
+      // period elapsed), this process would still be alive right now. No
+      // polling loop needed: by the time the promise above resolves, the
+      // escalation is guaranteed to have already run.
       let stillAlive = true;
-      for (let attempt = 0; attempt < 10 && stillAlive; attempt++) {
-        try {
-          await execFileAsync("pgrep", ["-f", marker]);
-        } catch {
-          stillAlive = false; // pgrep exits nonzero when nothing matches
-        }
-        if (stillAlive) await new Promise((resolve) => setTimeout(resolve, 200));
+      try {
+        await execFileAsync("pgrep", ["-f", marker]);
+      } catch {
+        stillAlive = false; // pgrep exits nonzero when nothing matches
       }
       assert.equal(stillAlive, false, `grandchild process matching "${marker}" survived the timeout kill`);
     } finally {

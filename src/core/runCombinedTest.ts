@@ -96,6 +96,13 @@ export async function runCombinedTest(
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    // Set once the SIGKILL escalation has actually run (or was never
+    // needed because we didn't time out). On a timeout we deliberately
+    // do NOT resolve on the direct child's own `close` alone — see
+    // maybeResolve below for why.
+    let escalationDone = false;
+    let childClosed = false;
+    let closeArgs: { code: number | null; signal: NodeJS.Signals | null } | null = null;
 
     const child = spawn(command!, args, {
       cwd: options.appDir,
@@ -116,11 +123,59 @@ export async function runCombinedTest(
       }
     };
 
+    const finish = (result: RunCombinedTestResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    /**
+     * On an ordinary (non-timeout) exit, the direct child's own `close`
+     * is enough to finish. On a timeout, it is NOT: the direct child
+     * (npm/sh) can exit quickly once it receives SIGTERM while a
+     * grandchild it spawned ignores SIGTERM entirely and keeps running.
+     * Resolving as soon as `close` fires — as this used to do — let the
+     * promise settle (and, in a one-shot process like the Action's
+     * main.js or `--once`, let the whole program exit) BEFORE the
+     * SIGKILL escalation's grace period had even elapsed, silently
+     * dropping that scheduled SIGKILL and leaking the grandchild
+     * indefinitely (caught in review). So when timedOut is true, this
+     * deliberately waits for BOTH childClosed AND escalationDone before
+     * finishing — guaranteeing the escalation always actually runs
+     * first.
+     */
+    const maybeResolve = (): void => {
+      if (settled || !childClosed || (timedOut && !escalationDone)) return;
+      const output = `${stdout}\n${stderr}`.trim();
+
+      if (timedOut) {
+        finish({
+          kind: "error",
+          message: `the test process (and its process group) was killed after exceeding the ${timeoutMs}ms timeout`,
+          output,
+        });
+        return;
+      }
+      const { code, signal } = closeArgs!;
+      if (signal) {
+        finish({ kind: "error", message: `the test process was terminated by signal ${signal}`, output });
+        return;
+      }
+      finish(code === 0 ? { kind: "passed", output } : { kind: "failed", exitCode: code ?? 1, output });
+    };
+
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
       killGroup("SIGTERM");
-      const killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS);
-      killTimer.unref();
+      // Deliberately NOT unref'd: must actually run (and keep the event
+      // loop alive to do so) before this can finish, so a grandchild
+      // that ignores SIGTERM still gets a real SIGKILL attempt instead
+      // of that attempt being silently dropped by an early process exit.
+      setTimeout(() => {
+        killGroup("SIGKILL");
+        escalationDone = true;
+        maybeResolve();
+      }, KILL_GRACE_MS);
     }, timeoutMs);
     timeoutTimer.unref();
 
@@ -132,31 +187,15 @@ export async function runCombinedTest(
     });
 
     child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timeoutTimer);
-      resolve({ kind: "error", message: error.message, output: `${stdout}\n${stderr}`.trim() });
+      finish({ kind: "error", message: error.message, output: `${stdout}\n${stderr}`.trim() });
     });
 
     child.on("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timeoutTimer);
-      const output = `${stdout}\n${stderr}`.trim();
-
-      if (timedOut) {
-        resolve({
-          kind: "error",
-          message: `the test process (and its process group) was killed after exceeding the ${timeoutMs}ms timeout`,
-          output,
-        });
-        return;
-      }
-      if (signal) {
-        resolve({ kind: "error", message: `the test process was terminated by signal ${signal}`, output });
-        return;
-      }
-      resolve(code === 0 ? { kind: "passed", output } : { kind: "failed", exitCode: code ?? 1, output });
+      childClosed = true;
+      closeArgs = { code, signal };
+      maybeResolve();
     });
   });
 }
