@@ -102,11 +102,20 @@ export interface ExtractBumpOptions {
 type PackageJsonDeps = Partial<Record<DependencySection, Record<string, string>>>;
 
 /**
- * A dependency specifier that isn't a registry version and therefore isn't
- * something `packdev compat` can test candidate versions of.
+ * A dependency specifier that isn't a registry version/range and
+ * therefore isn't something `packdev compat` can test candidate versions
+ * of. Delegates to semver.validRange rather than a prefix blacklist: a
+ * real, valid package.json can name a dist-tag ("latest", "next", "beta")
+ * instead of a version/range, which isn't caught by the workspace:/file:/
+ * git/http(s) prefix checks the previous blacklist had, and semver's own
+ * range parser rejects those the same way it rejects "workspace:*" — one
+ * check covers both cases instead of maintaining two divergent lists.
+ * Verified: semver.validRange("latest"/"next") -> null,
+ * semver.validRange("workspace:*") -> null, semver.validRange("^22.0.0")
+ * -> a real range.
  */
 function isRegistrySpecifier(spec: string): boolean {
-  return !/^(workspace:|file:|link:|git\+|git:|https?:|\*$)/.test(spec.trim());
+  return semver.validRange(spec.trim()) !== null;
 }
 
 async function readPackageJsonAt(
@@ -163,8 +172,20 @@ async function readPackageJsonAt(
  * consistent.
  */
 function toConcreteVersion(spec: string): string {
-  const resolved = semver.minVersion(spec);
-  return resolved ? resolved.version : spec;
+  // isRegistrySpecifier (called on both from/to before this ever runs)
+  // already rejects anything semver.validRange can't parse, so this
+  // shouldn't throw in practice — the try/catch is defense-in-depth
+  // against a semver edge case neither of us has tested, not the primary
+  // guard. Previously this had NO guard at all and crashed uncaught on
+  // a dist-tag specifier ("latest"/"next"/"beta") before
+  // isRegistrySpecifier was taught to reject those too — confirmed live,
+  // took down the whole Action run with no PR comment, no check run.
+  try {
+    const resolved = semver.minVersion(spec);
+    return resolved ? resolved.version : spec;
+  } catch {
+    return spec;
+  }
 }
 
 /** Every real dependency-version bump found in one specific package.json between two refs. Usually zero or one; more than one means a grouped update within that single file. */

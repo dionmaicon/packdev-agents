@@ -318,6 +318,71 @@ test("extractBump: workspace: specifier bump is ignored (not a registry version)
   }
 });
 
+test("extractBump: dist-tag specifier (\"latest\"/\"next\") is ignored, not a crash — real bug, found live: uncaught semver.minVersion throw took down the whole Action run", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: { lodash: "latest" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: { lodash: "next" },
+    });
+    await commit(repoDir, "dist-tag change");
+
+    // The bug: this used to throw uncaught (semver.minVersion("latest")
+    // throws) instead of resolving to a graceful Unsupported/no-bump
+    // result.
+    const result = await extractBump({
+      repoDir,
+      baseRef: "base",
+      headRef: "HEAD",
+    });
+
+    assert.equal(isUnsupported(result), true);
+    if (isUnsupported(result)) {
+      assert.equal(result.bumps.length, 0);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: dist-tag on ONE side, concrete version on the other -> also ignored, not a crash", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: { lodash: "4.17.20" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writePackageJson(repoDir, {
+      name: "app",
+      dependencies: { lodash: "latest" },
+    });
+    await commit(repoDir, "moved to dist-tag");
+
+    const result = await extractBump({
+      repoDir,
+      baseRef: "base",
+      headRef: "HEAD",
+    });
+
+    assert.equal(isUnsupported(result), true);
+    if (isUnsupported(result)) {
+      assert.equal(result.bumps.length, 0);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
 // --- auto-discovery: no packageJsonPath given, more than one package.json exists in the repo ---
 
 async function writeFileAt(
