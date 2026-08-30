@@ -113,9 +113,18 @@ type PackageJsonDeps = Partial<Record<DependencySection, Record<string, string>>
  * Verified: semver.validRange("latest"/"next") -> null,
  * semver.validRange("workspace:*") -> null, semver.validRange("^22.0.0")
  * -> a real range.
+ *
+ * A bare "*" is a special case kept as an explicit exclusion (caught by a
+ * Copilot review of this exact change): semver.validRange("*") returns a
+ * genuinely valid range (matches any version), so it isn't rejected the
+ * way dist-tags are — but "*" means "no real constraint," not a
+ * meaningful bump target, and toConcreteVersion("*") would resolve to
+ * the nonsensical "0.0.0" via minVersion() (confirmed) rather than
+ * anything the app's package.json actually intended.
  */
 function isRegistrySpecifier(spec: string): boolean {
-  return semver.validRange(spec.trim()) !== null;
+  const trimmed = spec.trim();
+  return trimmed !== "*" && semver.validRange(trimmed) !== null;
 }
 
 async function readPackageJsonAt(
