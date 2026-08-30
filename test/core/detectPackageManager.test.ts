@@ -140,7 +140,7 @@ test("installCommand: npm + package-lock.json -> ci", async () => {
   try {
     assert.deepEqual(await installCommand("npm", dir), {
       command: "npm",
-      args: ["ci", "--no-audit", "--no-fund"],
+      args: ["ci", "--no-audit", "--no-fund", "--ignore-scripts"],
     });
   } finally {
     await cleanup();
@@ -152,31 +152,59 @@ test("installCommand: npm + no lockfile -> install", async () => {
   try {
     assert.deepEqual(await installCommand("npm", dir), {
       command: "npm",
-      args: ["install", "--no-audit", "--no-fund"],
+      args: ["install", "--no-audit", "--no-fund", "--ignore-scripts"],
     });
   } finally {
     await cleanup();
   }
 });
 
-test("installCommand: yarn + yarn.lock -> install --frozen-lockfile", async () => {
-  const { dir, cleanup } = await makeDir({ "yarn.lock": "" });
+// Yarn classic (v1) needs --ignore-scripts told explicitly (runs scripts
+// by default); Yarn Berry (v2+) has no such flag at all — passing it is a
+// hard CLI syntax error, and Berry already disables build scripts by
+// default anyway. installCommand detects which one via the
+// "packageManager" field (or a real `yarn --version` spawn as a
+// fallback, not exercised by these fixtures since the field is always
+// present here) — see yarnNeedsIgnoreScriptsFlag's doc comment.
+
+test("installCommand: yarn v1 (classic) + yarn.lock -> install --frozen-lockfile --ignore-scripts", async () => {
+  const { dir, cleanup } = await makeDir({
+    "package.json": pkgJson({ packageManager: "yarn@1.22.22" }),
+    "yarn.lock": "",
+  });
   try {
-    assert.deepEqual(await installCommand("yarn", dir), {
+    assert.deepEqual(await installCommand("yarn", dir, "package.json"), {
+      command: "yarn",
+      args: ["install", "--frozen-lockfile", "--ignore-scripts"],
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("installCommand: yarn v1 (classic) + no lockfile -> install --ignore-scripts (not frozen, nothing to freeze against)", async () => {
+  const { dir, cleanup } = await makeDir({
+    "package.json": pkgJson({ packageManager: "yarn@1.22.22" }),
+  });
+  try {
+    assert.deepEqual(await installCommand("yarn", dir, "package.json"), {
+      command: "yarn",
+      args: ["install", "--ignore-scripts"],
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("installCommand: yarn Berry (v2+) + yarn.lock -> install --frozen-lockfile, NO --ignore-scripts (unsupported flag there, and unnecessary — Berry disables build scripts by default)", async () => {
+  const { dir, cleanup } = await makeDir({
+    "package.json": pkgJson({ packageManager: "yarn@4.14.1" }),
+    "yarn.lock": "",
+  });
+  try {
+    assert.deepEqual(await installCommand("yarn", dir, "package.json"), {
       command: "yarn",
       args: ["install", "--frozen-lockfile"],
-    });
-  } finally {
-    await cleanup();
-  }
-});
-
-test("installCommand: yarn + no lockfile -> install (not frozen, nothing to freeze against)", async () => {
-  const { dir, cleanup } = await makeDir({});
-  try {
-    assert.deepEqual(await installCommand("yarn", dir), {
-      command: "yarn",
-      args: ["install"],
     });
   } finally {
     await cleanup();
@@ -188,7 +216,7 @@ test("installCommand: pnpm + pnpm-lock.yaml -> install --frozen-lockfile", async
   try {
     assert.deepEqual(await installCommand("pnpm", dir), {
       command: "pnpm",
-      args: ["install", "--frozen-lockfile"],
+      args: ["install", "--frozen-lockfile", "--ignore-scripts"],
     });
   } finally {
     await cleanup();
@@ -200,7 +228,7 @@ test("installCommand: pnpm + no lockfile -> install (not frozen)", async () => {
   try {
     assert.deepEqual(await installCommand("pnpm", dir), {
       command: "pnpm",
-      args: ["install"],
+      args: ["install", "--ignore-scripts"],
     });
   } finally {
     await cleanup();

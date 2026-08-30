@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 
 import type { CompatReport } from "./packdevTypes.js";
 import { resolvePackdevBinPath } from "./packdevBin.js";
+import { buildSandboxEnv } from "./childEnv.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -99,6 +100,13 @@ export async function runCompat(
     const result = await execFileAsync(process.execPath, args, {
       cwd: options.appDir,
       maxBuffer: 50 * 1024 * 1024,
+      // packdev's own compat command does ITS OWN sandbox install of the
+      // candidate version(s) internally — this repo has no CLI flag to
+      // tell it --ignore-scripts, so npm_config_ignore_scripts (read by
+      // npm/pnpm as config, confirmed empirically) is the only lever
+      // available here. Also strips GITHUB_TOKEN/brain API keys from
+      // this entire process tree — see childEnv.ts.
+      env: buildSandboxEnv(),
     });
     stdout = result.stdout;
     stderr = result.stderr;

@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 
 import type { ApiDiffReport } from "./packdevTypes.js";
 import { resolvePackdevBinPath } from "./packdevBin.js";
+import { buildSandboxEnv } from "./childEnv.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -72,6 +73,10 @@ export async function runApiDiff(
     const result = await execFileAsync(process.execPath, args, {
       cwd: options.appDir,
       maxBuffer: 50 * 1024 * 1024,
+      // No install happens here (static analysis only), but strips
+      // GITHUB_TOKEN/brain API keys from this process tree regardless —
+      // see childEnv.ts.
+      env: buildSandboxEnv(),
     });
     stdout = result.stdout;
     stderr = result.stderr;

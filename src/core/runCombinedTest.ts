@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import type { PackageManagerName } from "./prepareWorkspace.js";
+import { buildSandboxEnv } from "./childEnv.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,6 +52,12 @@ export async function runCombinedTest(
     const result = await execFileAsync(command!, args, {
       cwd: options.appDir,
       maxBuffer: 50 * 1024 * 1024,
+      // This runs the app's own test command/script against a workspace
+      // whose dependencies (including the bumped ones) were installed
+      // with scripts disabled by prepareWorkspace, but the running test
+      // process itself still shouldn't have GITHUB_TOKEN/brain API keys
+      // in its env — see childEnv.ts.
+      env: buildSandboxEnv(),
     });
     stdout = result.stdout;
     stderr = result.stderr;
