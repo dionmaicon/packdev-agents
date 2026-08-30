@@ -12,9 +12,41 @@ integration) on top.
 
 ## Status
 
-Early scaffolding. No working code yet — see `docs/use-cases.md` for the
-two deployment modes being designed, and `docs/architecture.md` for how they
-share a common core.
+Working, real-tested end to end — see `docs/architecture.md` for the full
+design and `docs/use-cases.md` for the two deployment modes. Live-verified
+against real Dependabot PRs on two demo repos
+([packdev-demo-express](https://github.com/dionmaicon/packdev-demo-express),
+[packdev-demo-nestjs](https://github.com/dionmaicon/packdev-demo-nestjs)).
+
+## Required setup: branch protection
+
+**A failing `compat` check run does NOT block merging by itself.** GitHub
+only disables the "Merge pull request" button when the target branch has
+**branch protection** (or a repository ruleset) configured with `compat`
+as a required status check — without it, a red X is purely informational
+and the button stays clickable. This action deliberately does not
+configure this for you (it's a repo-owner, security-sensitive setting,
+and doing it from within a workflow run would itself be an odd pattern).
+
+To set it up:
+
+```sh
+gh api --method PUT repos/<owner>/<repo>/branches/<branch>/protection --input - <<'EOF'
+{
+  "required_status_checks": { "strict": false, "contexts": ["compat"] },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+EOF
+```
+
+(Or Settings → Branches → Add rule → Require status checks to pass →
+select `compat`.) Note: on GitHub's free plan, branch protection for a
+**private** repository requires GitHub Pro — it works for free on public
+repos. Don't require the `agentic-triage` check the same way — it's
+advisory-only by design (see `docs/architecture.md`) and isn't meant to
+gate a merge.
 
 ## Modes
 
