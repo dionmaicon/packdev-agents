@@ -99,11 +99,21 @@ export interface RunGithubPipelineOptions {
   brain?: Brain | undefined;
 }
 
-/** One IndependentBumps PR's combined-state result (see extractBump.ts). Distinct from CompatStepResult: no packdev sandbox, no control comparison — a plain pass/fail against the PR's real head. */
+/**
+ * One IndependentBumps PR's combined-state result (see extractBump.ts).
+ * Distinct from CompatStepResult: no packdev sandbox, no control
+ * comparison — a plain pass/fail against the PR's real head. "error"
+ * mirrors runCombinedTest.ts's own distinction: a timeout/signal-kill/
+ * spawn-failure says nothing reliable about the bumps themselves, so it
+ * is deliberately NOT the same as "failed" for rendering purposes (see
+ * renderCombined), even though both block auto-merge the same way —
+ * an inconclusive harness result is never good enough to merge on either.
+ */
 export type CombinedResult =
   | { kind: "skipped" }
   | { kind: "passed"; output: string }
-  | { kind: "failed"; output: string; exitCode: number };
+  | { kind: "failed"; output: string; exitCode: number }
+  | { kind: "error"; message: string; output: string };
 
 /** One package.json's outcome within a cross-file bump (see extractBump.ts's CrossFileBump). */
 export type CompatStepResult =
@@ -146,15 +156,38 @@ export function checkConclusionFor(verdict: Verdict): CheckConclusion {
   }
 }
 
-/** Worst-of-all: any single failing step fails the whole cross-file result; a step-level conclusion is only as good as its weakest member. */
-function checkConclusionForStep(step: CompatStepResult): CheckConclusion {
+/** Worst-of-all: any single failing step fails the whole cross-file result; a step-level conclusion is only as good as its weakest member. Exported so main.ts's cross-file/independent-verdict output logging uses this instead of its own copy — see checkConclusionForCrossFile/checkConclusionForIndependent below, which are the actual public surface for that. */
+export function checkConclusionForStep(step: CompatStepResult): CheckConclusion {
   return step.kind === "static-incompatible" ? "failure" : checkConclusionFor(step.verdict);
 }
 
-function worstConclusion(conclusions: CheckConclusion[]): CheckConclusion {
+/** "error" (harness/timeout/spawn problem) blocks the same as "failed" — see CombinedResult's doc comment for why. */
+export function checkConclusionForCombined(combined: CombinedResult): CheckConclusion {
+  return combined.kind === "failed" || combined.kind === "error" ? "failure" : "success";
+}
+
+export function worstConclusion(conclusions: CheckConclusion[]): CheckConclusion {
   if (conclusions.includes("failure")) return "failure";
   if (conclusions.includes("neutral")) return "neutral";
   return "success";
+}
+
+/**
+ * The ONE place that computes a cross-file bump's overall conclusion —
+ * previously main.ts had its own copy of this exact logic (worked, but
+ * only by staying manually in sync; a future change to the aggregation
+ * rule had no compiler-enforced reason to update main.ts too).
+ */
+export function checkConclusionForCrossFile(results: Array<{ step: CompatStepResult }>): CheckConclusion {
+  return worstConclusion(results.map((r) => checkConclusionForStep(r.step)));
+}
+
+/** Same reasoning as checkConclusionForCrossFile, for IndependentBumps. */
+export function checkConclusionForIndependent(
+  results: Array<{ step: CompatStepResult }>,
+  combined: CombinedResult,
+): CheckConclusion {
+  return worstConclusion([...results.map((r) => checkConclusionForStep(r.step)), checkConclusionForCombined(combined)]);
 }
 
 function checkTitleFor(verdict: Verdict, bump: Bump): string {
@@ -274,6 +307,12 @@ function renderCombined(combined: CombinedResult): string {
         "passed in isolation above, this specific combination does not work.\n\n```\n" +
         `${combined.output.slice(0, 4000)}\n\`\`\``
       );
+    case "error":
+      return (
+        `⚠️ The combined run couldn't produce a real result: ${combined.message}. This is a harness/` +
+        "environment problem, not a signal about the bumps themselves — treated as inconclusive, not a " +
+        `failure to blame on this combination.\n\n\`\`\`\n${combined.output.slice(0, 4000)}\n\`\`\``
+      );
   }
 }
 
@@ -326,9 +365,7 @@ async function runIndependentBumpsStep(
         testCommand: options.testCommand,
         testScript: options.testScript,
       });
-      combined = combinedResult.passed
-        ? { kind: "passed", output: combinedResult.output }
-        : { kind: "failed", output: combinedResult.output, exitCode: combinedResult.exitCode };
+      combined = combinedResult;
     } finally {
       await headWorkspace.cleanup();
     }
@@ -422,7 +459,7 @@ export async function runGithubPipeline(
     const body = `${COMMENT_MARKER}\n${lines.join("\n")}`;
 
     await options.github.upsertComment({ marker: COMMENT_MARKER, body });
-    const conclusion = worstConclusion(results.map((r) => checkConclusionForStep(r.step)));
+    const conclusion = checkConclusionForCrossFile(results);
     await options.github.createCheckRun({
       name: "packdev compat",
       conclusion,
@@ -465,9 +502,7 @@ export async function runGithubPipeline(
 
     await options.github.upsertComment({ marker: COMMENT_MARKER, body });
 
-    const stepConclusions = results.map((r) => checkConclusionForStep(r.step));
-    const combinedConclusion: CheckConclusion = combined.kind === "failed" ? "failure" : "success";
-    const conclusion = worstConclusion([...stepConclusions, combinedConclusion]);
+    const conclusion = checkConclusionForIndependent(results, combined);
 
     await options.github.createCheckRun({
       name: "packdev compat",
@@ -481,7 +516,7 @@ export async function runGithubPipeline(
     // blocks merge on its own; that's the cost/coverage tradeoff the user
     // opted into via testCombinedBump: false.
     const allIsolatedPassed = results.every((r) => r.step.kind === "verdict" && isAutoMergeEligible(r.step.verdict));
-    const combinedOk = combined.kind !== "failed";
+    const combinedOk = combined.kind !== "failed" && combined.kind !== "error";
     let merged = false;
     if (options.autoMerge && allIsolatedPassed && combinedOk) {
       await options.github.mergePullRequest();

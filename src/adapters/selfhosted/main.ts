@@ -124,6 +124,12 @@ async function runOnce(): Promise<void> {
       `Skipped (already processed at current head): ${result.skippedAlreadySeen.map((pr) => `#${pr.number}`).join(", ")}`,
     );
   }
+  // Logged, not thrown: one PR failing must not take down the whole poll
+  // cycle or the process running it — see pollOnce's doc comment. These
+  // PRs weren't marked as seen, so they're retried next cycle.
+  for (const { pr, error } of result.failed) {
+    console.error(`PR #${pr.number}: FAILED this cycle, will retry next cycle — ${String(error)}`);
+  }
 }
 
 async function main(): Promise<void> {

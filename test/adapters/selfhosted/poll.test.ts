@@ -253,6 +253,61 @@ test(
 );
 
 test(
+  "pollOnce: one PR throwing (bad branch, real git error) does not abort the batch — the other PR still gets processed, and the failing one isn't marked seen",
+  { timeout: 120_000 },
+  async () => {
+    const { remoteDir, baseSha, headSha, cleanup: cleanupRemote } = await makeRemoteWithBumpPR();
+    const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-poll-clone-"));
+    const stateDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-poll-state-"));
+    try {
+      const statePath = path.join(stateDir, "state.json");
+      const brokenPr: OpenBotPR = {
+        number: 1,
+        actor: "dependabot[bot]",
+        baseBranch: "main",
+        baseSha,
+        // Doesn't exist on the remote — fetchBranch throws a real git
+        // error, the exact failure mode this test exercises.
+        headBranch: "dependabot/does-not-exist",
+        headSha: "0".repeat(40),
+      };
+      const goodPr: OpenBotPR = {
+        number: 2,
+        actor: "dependabot[bot]",
+        baseBranch: "main",
+        baseSha,
+        headBranch: "dependabot/bump",
+        headSha,
+      };
+      const github = fakeGitHubOps();
+
+      const result = await pollOnce({
+        cloneDir,
+        remoteUrl: remoteDir,
+        statePath,
+        testCommand: "true",
+        prSource: fakePRSource([brokenPr, goodPr]),
+        githubOpsFor: () => github,
+      });
+
+      assert.equal(result.failed.length, 1);
+      assert.equal(result.failed[0]!.pr.number, 1);
+      assert.equal(result.processed.length, 1);
+      assert.equal(result.processed[0]!.pr.number, 2);
+      assert.equal(github.comments.length, 1, "the good PR still got its comment posted");
+
+      const state = await loadSeenState(statePath);
+      assert.equal(state["1"], undefined, "the failing PR must not be marked seen -- it should retry next cycle");
+      assert.equal(state["2"], headSha);
+    } finally {
+      await cleanupRemote();
+      await rm(cloneDir, { recursive: true, force: true });
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
   "pollOnce: actor not in allowedActors is filtered out entirely, no state entry written",
   { timeout: 120_000 },
   async () => {
