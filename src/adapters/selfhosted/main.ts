@@ -4,6 +4,7 @@ import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from ".
 import { createOctokitOps } from "../shared/octokitOps.js";
 import { createOctokitPullRequestSource } from "./discoverPRs.js";
 import { pollOnce, type PollResult } from "./poll.js";
+import { createPollLoop } from "./loop.js";
 
 function env(name: string): string | undefined {
   return process.env[name];
@@ -153,22 +154,11 @@ async function main(): Promise<void> {
   }
 
   const intervalSeconds = Number(env("POLL_INTERVAL_SECONDS") ?? "300");
-  let stopped = false;
-  const stop = (): void => {
-    stopped = true;
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  const loop = createPollLoop({ runOnce, sleep, intervalMs: intervalSeconds * 1000 });
+  process.once("SIGINT", loop.stop);
+  process.once("SIGTERM", loop.stop);
 
-  while (!stopped) {
-    try {
-      await runOnce();
-    } catch (error) {
-      console.error("Poll failed:", error);
-    }
-    if (stopped) break;
-    await sleep(intervalSeconds * 1000);
-  }
+  await loop.start();
 }
 
 main().catch((error: unknown) => {
