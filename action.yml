@@ -40,6 +40,18 @@ inputs:
     description: "Fail this Action step (in addition to the check run conclusion) when the verdict isn't PASSED or PASSED_WEAK."
     required: false
     default: "true"
+  test-combined-bump:
+    description: >-
+      Only relevant when a PR bumps multiple packages in one file to
+      DIFFERING target versions (not Dependabot's own grouped updates,
+      which always share one version — but possible from a custom
+      actor/agent-authored PR). Each bump is always tested in isolation;
+      this controls whether an EXTRA run also tests the PR's real combined
+      state (every bump applied at once) to catch an interaction bug
+      isolation alone can't see. Defaults to true (N+1 sandbox runs). Set
+      to "false" to cap cost at N isolated runs only.
+    required: false
+    default: "true"
   package-json-path:
     description: >-
       Optional override, relative to the repo root. Without it (the
@@ -116,6 +128,7 @@ runs:
         INPUT_ALLOWED-ACTORS: ${{ inputs.allowed-actors }}
         INPUT_FAIL-STEP-ON-NON-PASS: ${{ inputs.fail-step-on-non-pass }}
         INPUT_PACKAGE-JSON-PATH: ${{ inputs.package-json-path }}
+        INPUT_TEST-COMBINED-BUMP: ${{ inputs.test-combined-bump }}
         INPUT_BRAIN: ${{ inputs.brain }}
         INPUT_ANTHROPIC-API-KEY: ${{ inputs.anthropic-api-key }}
         INPUT_ANTHROPIC-MODEL: ${{ inputs.anthropic-model }}

@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { extractBump, isUnsupported, isCrossFileBump } from "../../src/core/extractBump.ts";
+import { extractBump, isUnsupported, isCrossFileBump, isIndependentBumps } from "../../src/core/extractBump.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -111,7 +111,7 @@ test("extractBump: a caret/tilde-RANGE bump is normalized to its concrete versio
   }
 });
 
-test("extractBump: grouped bump with DIFFERING target versions returns Unsupported with all bumps listed", async () => {
+test("extractBump: same-file bump with DIFFERING target versions returns IndependentBumps, not Unsupported", async () => {
   const repoDir = await makeRepo();
   try {
     await writePackageJson(repoDir, {
@@ -133,11 +133,55 @@ test("extractBump: grouped bump with DIFFERING target versions returns Unsupport
       headRef: "HEAD",
     });
 
+    assert.equal(isUnsupported(result), false);
+    assert.equal(isIndependentBumps(result), true);
+    if (isIndependentBumps(result)) {
+      assert.equal(result.bumps.length, 2);
+      assert.equal(result.packageJsonPath, "package.json");
+      const names = result.bumps.map((b) => b.name).sort();
+      assert.deepEqual(names, ["commander", "lodash"]);
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("extractBump: bumps spread across multiple package.json files with no valid cross-file/grouped shape stays Unsupported", async () => {
+  const repoDir = await makeRepo();
+  try {
+    await writeFile(path.join(repoDir, "package.json"), JSON.stringify({ name: "root", dependencies: {} }));
+    await execFileAsync("mkdir", ["-p", path.join(repoDir, "apps/a"), path.join(repoDir, "apps/b")]);
+    await writeFile(
+      path.join(repoDir, "apps/a/package.json"),
+      JSON.stringify({ name: "a", dependencies: { commander: "11.0.0" } }),
+    );
+    await writeFile(
+      path.join(repoDir, "apps/b/package.json"),
+      JSON.stringify({ name: "b", dependencies: { lodash: "4.17.20" } }),
+    );
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writeFile(
+      path.join(repoDir, "apps/a/package.json"),
+      JSON.stringify({ name: "a", dependencies: { commander: "11.1.0" } }),
+    );
+    await writeFile(
+      path.join(repoDir, "apps/b/package.json"),
+      JSON.stringify({ name: "b", dependencies: { lodash: "4.17.21" } }),
+    );
+    await commit(repoDir, "unrelated bumps in two files");
+
+    const result = await extractBump({
+      repoDir,
+      baseRef: "base",
+      headRef: "HEAD",
+    });
+
     assert.equal(isUnsupported(result), true);
     if (isUnsupported(result)) {
       assert.equal(result.bumps.length, 2);
-      assert.match(result.reason, /Grouped update/);
-      assert.match(result.reason, /DIFFERING target versions/);
+      assert.match(result.reason, /across 2 package\.json files/);
     }
   } finally {
     await rm(repoDir, { recursive: true, force: true });

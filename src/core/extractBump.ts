@@ -54,6 +54,26 @@ export interface CrossFileBump {
   bumps: Bump[];
 }
 
+/**
+ * More than one package bumped in the SAME package.json to DIFFERING
+ * target versions — e.g. a manually-authored or custom-agent-authored PR
+ * (not Dependabot's own "grouped update", which always shares one target
+ * version — see Bump.group) that bumps express AND is-number to their own
+ * independent latest. packdev's `--group` can only pin companions to the
+ * SAME version as the primary being tested, so there's no single sandbox
+ * state that represents this PR — each bump is tested in ISOLATION
+ * instead (holding every other package at its pre-bump version, which
+ * `prepareWorkspace`'s base-ref checkout already gives us for free), plus
+ * by default one COMBINED run against the PR's real head state to catch
+ * an interaction bug two individually-fine bumps could still cause. See
+ * runIndependentBumpsStep in pipeline.ts.
+ */
+export interface IndependentBumps {
+  kind: "independent";
+  packageJsonPath: string;
+  bumps: Bump[];
+}
+
 export interface Unsupported {
   kind: "unsupported";
   reason: string;
@@ -223,20 +243,19 @@ async function discoverChangedPackageJsonPaths(
  * bot-formatted and varies across Dependabot/Renovate, ecosystem, and
  * grouped-update configuration.
  *
- * Returns Unsupported when zero dependencies changed, or when more than one
- * changed in a way that can't be expressed as one packdev compat run:
- * spread across more than one package.json (a monorepo can have this), or
- * within one file but landing on DIFFERING target versions (packdev's
- * `--group` can only pin companions to the SAME version as the primary
- * being tested — see the Bump.group doc comment). A same-file, same-target-
- * version grouped bump (Dependabot's "grouped update" for a version-locked
- * family, e.g. every @nestjs/* package moving to the same release together)
- * IS supported: one bump is picked as the primary and the rest become its
- * `group`.
+ * Returns Unsupported only when zero dependencies changed, or when more
+ * than one changed spread across more than one package.json (a monorepo
+ * can have this — too compound a shape for v1). Within one file: a
+ * same-target-version grouped bump (Dependabot's "grouped update" for a
+ * version-locked family, e.g. every @nestjs/* package moving to the same
+ * release together) picks one bump as the primary and the rest become its
+ * `group`; a DIFFERING-target-version grouped bump (not something
+ * Dependabot's own grouping produces, but a custom actor/agent-authored PR
+ * can) returns IndependentBumps instead — see its doc comment.
  */
 export async function extractBump(
   options: ExtractBumpOptions,
-): Promise<Bump | CrossFileBump | Unsupported> {
+): Promise<Bump | CrossFileBump | IndependentBumps | Unsupported> {
   const filesToCheck = options.packageJsonPath
     ? [options.packageJsonPath]
     : await discoverChangedPackageJsonPaths(options.repoDir, options.baseRef, options.headRef);
@@ -284,22 +303,35 @@ export async function extractBump(
     return { kind: "cross-file", name: bumps[0]!.name, toVersion: bumps[0]!.toVersion, bumps };
   }
 
-  const reason =
-    distinctFiles.size > 1
-      ? `Grouped update: ${bumps.length} packages bumped across ${distinctFiles.size} package.json files in one PR`
-      : `Grouped update: ${bumps.length} packages bumped to DIFFERING target versions in one PR — ` +
-        "packdev's --group can only pin companions to the same version as the primary being tested";
-  return { kind: "unsupported", reason, bumps };
+  // Same file, differing target versions — no single sandbox state
+  // represents this PR (see IndependentBumps doc comment), but each bump
+  // CAN be tested in isolation plus a combined run, so this is supported,
+  // not skipped.
+  if (distinctFiles.size === 1) {
+    return { kind: "independent", packageJsonPath: bumps[0]!.packageJsonPath, bumps };
+  }
+
+  return {
+    kind: "unsupported",
+    reason: `Grouped update: ${bumps.length} packages bumped across ${distinctFiles.size} package.json files in one PR`,
+    bumps,
+  };
 }
 
 export function isUnsupported(
-  result: Bump | CrossFileBump | Unsupported,
+  result: Bump | CrossFileBump | IndependentBumps | Unsupported,
 ): result is Unsupported {
   return "kind" in result && result.kind === "unsupported";
 }
 
 export function isCrossFileBump(
-  result: Bump | CrossFileBump | Unsupported,
+  result: Bump | CrossFileBump | IndependentBumps | Unsupported,
 ): result is CrossFileBump {
   return "kind" in result && result.kind === "cross-file";
+}
+
+export function isIndependentBumps(
+  result: Bump | CrossFileBump | IndependentBumps | Unsupported,
+): result is IndependentBumps {
+  return "kind" in result && result.kind === "independent";
 }

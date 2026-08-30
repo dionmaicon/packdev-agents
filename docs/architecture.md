@@ -206,13 +206,40 @@ shape yet — it would need one agent-loop run per app, a bigger lift than
 that experimental adapter currently does — and reports it the same way an
 ordinary unsupported bump would be.
 
-Still `Unsupported`, and reported as such listing every bump found: a
-grouped update within one file landing on DIFFERING target versions
-(`--group` can't express that — see above), or a genuinely heterogeneous
-cross-file case (different packages, or the same package to different
-target versions, across files) — none of these can be expressed as
-packdev compat runs without guessing which one to test, which would
-produce a verdict that doesn't answer the PR.
+A grouped update within one file landing on DIFFERING target versions —
+not something Dependabot's own grouping ever produces (it always shares
+one version), but a real shape once other actors are in play: a
+self-hosted setup or custom bot/agent (any consumer of the self-hosted
+adapter, not just GitHub's Dependabot) can author a PR that bumps several
+packages to their own independent latest in one commit. `--group` can't
+express this (it only pins companions to the SAME version as the primary
+being tested), so it's NOT run as one compat call — but it IS supported,
+returned as `IndependentBumps` (`extractBump.ts`), not `Unsupported`.
+`runIndependentBumpsStep` (`pipeline.ts`) tests each bump in true
+ISOLATION first: because `prepareWorkspace`'s base-ref checkout already
+holds every OTHER package at its pre-bump version (that's the whole
+control-guard property — see "The control problem" above), calling
+`runCompatStep` once per bump against that SAME shared checkout costs
+nothing extra to set up, no package.json patching needed. Isolation alone
+cannot catch an interaction bug where two bumps are each individually
+fine but conflict together, so by default (`testCombinedBump: true`) one
+more run tests the PR's real combined state — a SEPARATE checkout at the
+head ref (every bump applied at once, as actually committed) with the
+test command/script run directly via `runCombinedTest`, no packdev
+sandbox or control diff, a plain pass/fail. `testCombinedBump: false`
+caps cost at N isolated runs instead of N+1 — the user's call, not
+something enforced on their behalf. Auto-merge requires every isolated
+bump to genuinely pass AND (when run) the combined state to not fail; a
+skipped combined run never blocks merge on its own. The agentic-triage
+adapter does not support this shape yet, for the same reason it doesn't
+support `CrossFileBump` — reported the same way an ordinary unsupported
+bump would be.
+
+Still `Unsupported`, and reported as such listing every bump found: bumps
+spread across MORE THAN ONE `package.json` in a shape that isn't the
+same-package/same-version `CrossFileBump` case above — too heterogeneous
+to express as packdev compat runs without guessing which one to test,
+which would produce a verdict that doesn't answer the PR.
 
 ### 2. `prepareWorkspace(baseRef) -> Workspace`
 
