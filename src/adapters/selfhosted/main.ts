@@ -1,6 +1,7 @@
 import * as githubApi from "@actions/github";
 
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../../core/brain.js";
+import type { CompatStepResult } from "../../core/pipeline.js";
 import { createOctokitOps } from "../shared/octokitOps.js";
 import { createOctokitPullRequestSource } from "./discoverPRs.js";
 import { pollOnce, type PollResult } from "./poll.js";
@@ -44,6 +45,18 @@ function buildBrain(): Brain | undefined {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Shared by the cross-file/independent-verdict log lines below — avoids the "add a step kind, forget a call site" trap that fixing this file's own compile errors just caught once already. */
+function stepKindLabel(step: CompatStepResult): string {
+  switch (step.kind) {
+    case "static-incompatible":
+      return "STATIC_INCOMPATIBLE";
+    case "test-command-caveat":
+      return "TEST_COMMAND_CAVEAT";
+    case "verdict":
+      return step.verdict.kind;
+  }
 }
 
 async function runOnce(): Promise<PollResult> {
@@ -102,18 +115,20 @@ async function runOnce(): Promise<PollResult> {
         `PR #${pr.number}: static incompatible — ${prResult.bump.name} ` +
           `${prResult.bump.fromVersion} → ${prResult.bump.toVersion} (packdev api-diff, skipped compat)`,
       );
+    } else if (prResult.status === "test-command-caveat") {
+      console.log(
+        `PR #${pr.number}: test command misconfigured for ${prResult.bump.name} ` +
+          `${prResult.bump.fromVersion} → ${prResult.bump.toVersion} — no sandboxed compat run performed. ` +
+          prResult.message,
+      );
     } else if (prResult.status === "cross-file-verdict") {
-      const kinds = prResult.results
-        .map((r) => (r.step.kind === "static-incompatible" ? "STATIC_INCOMPATIBLE" : r.step.verdict.kind))
-        .join(", ");
+      const kinds = prResult.results.map((r) => stepKindLabel(r.step)).join(", ");
       console.log(
         `PR #${pr.number}: cross-file — ${prResult.bump.name} ${prResult.bump.toVersion} across ` +
           `${prResult.results.length} apps [${kinds}] (merged: ${prResult.merged})`,
       );
     } else if (prResult.status === "independent-verdict") {
-      const kinds = prResult.results
-        .map((r) => (r.step.kind === "static-incompatible" ? "STATIC_INCOMPATIBLE" : r.step.verdict.kind))
-        .join(", ");
+      const kinds = prResult.results.map((r) => stepKindLabel(r.step)).join(", ");
       console.log(
         `PR #${pr.number}: independent bumps — ${prResult.results.length} packages [${kinds}], ` +
           `combined: ${prResult.combined.kind} (merged: ${prResult.merged})`,

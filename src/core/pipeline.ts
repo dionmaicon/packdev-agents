@@ -15,7 +15,8 @@ import { runCompat } from "./runCompat.js";
 import { runApiDiff } from "./runApiDiff.js";
 import { runCombinedTest } from "./runCombinedTest.js";
 import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
-import { render, renderStaticIncompatible } from "./report.js";
+import { render, renderStaticIncompatible, renderTestCommandCaveat } from "./report.js";
+import { detectSilentPretestSkip } from "./testCommandGuard.js";
 import { renderWithBrain, type Brain } from "./brain.js";
 import type { ApiDiffReport } from "./packdevTypes.js";
 
@@ -118,6 +119,7 @@ export type CombinedResult =
 /** One package.json's outcome within a cross-file bump (see extractBump.ts's CrossFileBump). */
 export type CompatStepResult =
   | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
+  | { kind: "test-command-caveat"; message: string }
   | { kind: "verdict"; verdict: Verdict };
 
 export type RunGithubPipelineResult =
@@ -137,7 +139,8 @@ export type RunGithubPipelineResult =
       results: Array<{ bump: Bump; step: CompatStepResult }>;
       combined: CombinedResult;
       merged: boolean;
-    };
+    }
+  | { status: "test-command-caveat"; bump: Bump; message: string };
 
 /** Exported so main.ts can decide whether to fail the Action step itself using the same mapping as the check run conclusion, instead of duplicating the switch. */
 export function checkConclusionFor(verdict: Verdict): CheckConclusion {
@@ -158,7 +161,13 @@ export function checkConclusionFor(verdict: Verdict): CheckConclusion {
 
 /** Worst-of-all: any single failing step fails the whole cross-file result; a step-level conclusion is only as good as its weakest member. Exported so main.ts's cross-file/independent-verdict output logging uses this instead of its own copy — see checkConclusionForCrossFile/checkConclusionForIndependent below, which are the actual public surface for that. */
 export function checkConclusionForStep(step: CompatStepResult): CheckConclusion {
-  return step.kind === "static-incompatible" ? "failure" : checkConclusionFor(step.verdict);
+  if (step.kind === "static-incompatible") return "failure";
+  // Mirrors unsupported-bump's own conclusion below: not a red X (this
+  // isn't evidence the bump is broken), but never auto-merge eligible
+  // either — see testCommandGuard.ts's doc comment for why no real verdict
+  // exists to report here.
+  if (step.kind === "test-command-caveat") return "neutral";
+  return checkConclusionFor(step.verdict);
 }
 
 /** "error" (harness/timeout/spawn problem) blocks the same as "failed" — see CombinedResult's doc comment for why. */
@@ -242,6 +251,17 @@ async function runCompatStep(
   bump: Bump,
   test: { testCommand?: string | undefined; testScript?: string | undefined },
 ): Promise<CompatStepResult> {
+  // Refuses to run at all rather than risk a false clean pass — see
+  // testCommandGuard.ts's doc comment. Checked first, before the static
+  // api-diff prefilter: a confident static regression would still be a
+  // real result, but there's no reason to spend that call once we already
+  // know the eventual sandboxed compat run (which static-incompatible
+  // doesn't always short-circuit) can't be trusted for this app.
+  const caveat = await detectSilentPretestSkip(appDir, test);
+  if (caveat) {
+    return { kind: "test-command-caveat", message: caveat };
+  }
+
   // Static, no install — cheap enough to always run first. Only skips the
   // expensive sandboxed compat run on a CONFIDENT, NEW regression (see
   // isConfidentStaticRegression above) — never on a pre-existing issue the
@@ -292,7 +312,9 @@ async function runCompatStep(
 
 /** Renders one CompatStepResult's body — shared between the single-bump and cross-file-per-app comment paths. */
 function renderStep(step: CompatStepResult, bump: Bump): string {
-  return step.kind === "static-incompatible" ? renderStaticIncompatible(bump, step.apiDiff) : render(step.verdict);
+  if (step.kind === "static-incompatible") return renderStaticIncompatible(bump, step.apiDiff);
+  if (step.kind === "test-command-caveat") return renderTestCommandCaveat(bump, step.message);
+  return render(step.verdict);
 }
 
 function renderCombined(combined: CombinedResult): string {
@@ -567,6 +589,21 @@ export async function runGithubPipeline(
     });
 
     return { status: "static-incompatible", bump, apiDiff: stepResult.apiDiff };
+  }
+
+  if (stepResult.kind === "test-command-caveat") {
+    const body = renderTestCommandCaveat(bump, stepResult.message);
+    const commentBody = `${COMMENT_MARKER}\n${body}`;
+
+    await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
+    await options.github.createCheckRun({
+      name: "packdev compat",
+      conclusion: "neutral",
+      title: `${bump.name} ${bump.fromVersion} → ${bump.toVersion}: test command misconfigured`,
+      summary: body,
+    });
+
+    return { status: "test-command-caveat", bump, message: stepResult.message };
   }
 
   const verdict = stepResult.verdict;

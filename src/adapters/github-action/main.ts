@@ -141,6 +141,17 @@ async function run(): Promise<void> {
     return;
   }
 
+  if (result.status === "test-command-caveat") {
+    // Same "neutral" treatment as unsupported-bump above: not a red X (this
+    // isn't evidence the bump itself is broken), but never auto-merge
+    // eligible either — see testCommandGuard.ts's doc comment.
+    core.info(
+      `Test command misconfigured for ${result.bump.name} ${result.bump.fromVersion} → ` +
+        `${result.bump.toVersion} — no sandboxed compat run performed. ${result.message}`,
+    );
+    return;
+  }
+
   if (result.status === "independent-verdict") {
     const worst = checkConclusionForIndependent(result.results, result.combined);
     core.setOutput("merged", String(result.merged));
