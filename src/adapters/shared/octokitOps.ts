@@ -50,18 +50,34 @@ export function createOctokitOps(config: OctokitOpsConfig): GitHubOps {
     },
 
     async createCheckRun(input: CheckRunInput): Promise<void> {
-      await octokit.rest.checks.create({
-        owner,
-        repo,
-        name: input.name,
-        head_sha: headSha,
-        status: "completed",
-        conclusion: input.conclusion,
-        output: {
-          title: input.title,
-          summary: input.summary,
-        },
-      });
+      // Best-effort, not fatal: the Checks API requires the token to
+      // belong to a GitHub App installation — a plain PAT (what a
+      // self-hosted operator's GITHUB_TOKEN most likely is) can never
+      // create a check run, full stop, no permission grant fixes it.
+      // upsertComment above is the primary output and needs no special
+      // token type; letting a checks.create failure take the whole PR
+      // result down with it (caught live: an unhandled HttpError aborted
+      // the PR before the comment ever posted) would make check runs a
+      // hard GitHub-App requirement by accident. They're a bonus signal,
+      // not a load-bearing one.
+      try {
+        await octokit.rest.checks.create({
+          owner,
+          repo,
+          name: input.name,
+          head_sha: headSha,
+          status: "completed",
+          conclusion: input.conclusion,
+          output: {
+            title: input.title,
+            summary: input.summary,
+          },
+        });
+      } catch (error) {
+        console.error(
+          `createCheckRun failed (continuing without it): ${String(error)}`,
+        );
+      }
     },
 
     async mergePullRequest(): Promise<void> {
