@@ -52,8 +52,6 @@ function stepKindLabel(step: CompatStepResult): string {
   switch (step.kind) {
     case "static-incompatible":
       return "STATIC_INCOMPATIBLE";
-    case "test-command-caveat":
-      return "TEST_COMMAND_CAVEAT";
     case "verdict":
       return step.verdict.kind;
   }
@@ -114,12 +112,6 @@ async function runOnce(): Promise<PollResult> {
       console.log(
         `PR #${pr.number}: static incompatible — ${prResult.bump.name} ` +
           `${prResult.bump.fromVersion} → ${prResult.bump.toVersion} (packdev api-diff, skipped compat)`,
-      );
-    } else if (prResult.status === "test-command-caveat") {
-      console.log(
-        `PR #${pr.number}: test command misconfigured for ${prResult.bump.name} ` +
-          `${prResult.bump.fromVersion} → ${prResult.bump.toVersion} — no sandboxed compat run performed. ` +
-          prResult.message,
       );
     } else if (prResult.status === "cross-file-verdict") {
       const kinds = prResult.results.map((r) => stepKindLabel(r.step)).join(", ");

@@ -10,13 +10,13 @@ import {
   type IndependentBumps,
   type Unsupported,
 } from "./extractBump.js";
-import { prepareWorkspace, type Workspace } from "./prepareWorkspace.js";
+import { prepareWorkspace, detectPackageManager, type Workspace } from "./prepareWorkspace.js";
 import { runCompat } from "./runCompat.js";
 import { runApiDiff } from "./runApiDiff.js";
 import { runCombinedTest } from "./runCombinedTest.js";
 import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
-import { render, renderStaticIncompatible, renderTestCommandCaveat } from "./report.js";
-import { detectSilentPretestSkip } from "./testCommandGuard.js";
+import { render, renderStaticIncompatible } from "./report.js";
+import { planTestCommand } from "./testCommandPlan.js";
 import { renderWithBrain, type Brain } from "./brain.js";
 import type { ApiDiffReport } from "./packdevTypes.js";
 
@@ -119,8 +119,8 @@ export type CombinedResult =
 /** One package.json's outcome within a cross-file bump (see extractBump.ts's CrossFileBump). */
 export type CompatStepResult =
   | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
-  | { kind: "test-command-caveat"; message: string }
-  | { kind: "verdict"; verdict: Verdict };
+  /** `commandNote` is set when the configured test command was rewritten to restore the app's own lifecycle hooks — see testCommandPlan.ts. */
+  | { kind: "verdict"; verdict: Verdict; commandNote?: string | null };
 
 export type RunGithubPipelineResult =
   | { status: "skipped-actor"; actor: string }
@@ -139,8 +139,7 @@ export type RunGithubPipelineResult =
       results: Array<{ bump: Bump; step: CompatStepResult }>;
       combined: CombinedResult;
       merged: boolean;
-    }
-  | { status: "test-command-caveat"; bump: Bump; message: string };
+    };
 
 /** Exported so main.ts can decide whether to fail the Action step itself using the same mapping as the check run conclusion, instead of duplicating the switch. */
 export function checkConclusionFor(verdict: Verdict): CheckConclusion {
@@ -161,13 +160,7 @@ export function checkConclusionFor(verdict: Verdict): CheckConclusion {
 
 /** Worst-of-all: any single failing step fails the whole cross-file result; a step-level conclusion is only as good as its weakest member. Exported so main.ts's cross-file/independent-verdict output logging uses this instead of its own copy — see checkConclusionForCrossFile/checkConclusionForIndependent below, which are the actual public surface for that. */
 export function checkConclusionForStep(step: CompatStepResult): CheckConclusion {
-  if (step.kind === "static-incompatible") return "failure";
-  // Mirrors unsupported-bump's own conclusion below: not a red X (this
-  // isn't evidence the bump is broken), but never auto-merge eligible
-  // either — see testCommandGuard.ts's doc comment for why no real verdict
-  // exists to report here.
-  if (step.kind === "test-command-caveat") return "neutral";
-  return checkConclusionFor(step.verdict);
+  return step.kind === "static-incompatible" ? "failure" : checkConclusionFor(step.verdict);
 }
 
 /** "error" (harness/timeout/spawn problem) blocks the same as "failed" — see CombinedResult's doc comment for why. */
@@ -251,16 +244,11 @@ async function runCompatStep(
   bump: Bump,
   test: { testCommand?: string | undefined; testScript?: string | undefined },
 ): Promise<CompatStepResult> {
-  // Refuses to run at all rather than risk a false clean pass — see
-  // testCommandGuard.ts's doc comment. Checked first, before the static
-  // api-diff prefilter: a confident static regression would still be a
-  // real result, but there's no reason to spend that call once we already
-  // know the eventual sandboxed compat run (which static-incompatible
-  // doesn't always short-circuit) can't be trusted for this app.
-  const caveat = await detectSilentPretestSkip(appDir, test);
-  if (caveat) {
-    return { kind: "test-command-caveat", message: caveat };
-  }
+  // Reconstructs the app's own lifecycle-hook chain explicitly when
+  // --ignore-scripts would otherwise silently suppress it — see
+  // testCommandPlan.ts. Passes through untouched when there are no hooks
+  // to restore, so the common case is unaffected.
+  const plan = await planTestCommand(appDir, test, await detectPackageManager(appDir, "package.json"));
 
   // Static, no install — cheap enough to always run first. Only skips the
   // expensive sandboxed compat run on a CONFIDENT, NEW regression (see
@@ -288,7 +276,7 @@ async function runCompatStep(
     appDir,
     packageName: bump.name,
     versions: [bump.toVersion],
-    ...(test.testScript ? { testScript: test.testScript } : { testCommand: test.testCommand }),
+    ...(plan.testScript ? { testScript: plan.testScript } : { testCommand: plan.testCommand }),
     extraArgs: [
       // Duplicate-copy regressions (DI singletons, instanceof checks) are a
       // real, distinct failure mode from an incompatible API —
@@ -307,14 +295,18 @@ async function runCompatStep(
       ...(bump.group && bump.group.length > 0 ? ["--group", bump.group.join(",")] : []),
     ],
   });
-  return { kind: "verdict", verdict: interpret(result.report, result.exitCode) };
+  return { kind: "verdict", verdict: interpret(result.report, result.exitCode), commandNote: plan.note };
 }
 
 /** Renders one CompatStepResult's body — shared between the single-bump and cross-file-per-app comment paths. */
 function renderStep(step: CompatStepResult, bump: Bump): string {
   if (step.kind === "static-incompatible") return renderStaticIncompatible(bump, step.apiDiff);
-  if (step.kind === "test-command-caveat") return renderTestCommandCaveat(bump, step.message);
-  return render(step.verdict);
+  return withCommandNote(render(step.verdict), step.commandNote);
+}
+
+/** Appends the test-command rewrite note, when there was one — see TestPlan.note for why this is never suppressed. */
+function withCommandNote(body: string, note: string | null | undefined): string {
+  return note ? `${body}\n\n${note}` : body;
 }
 
 function renderCombined(combined: CombinedResult): string {
@@ -381,11 +373,20 @@ async function runIndependentBumpsStep(
     });
     try {
       const headAppDir = path.join(headWorkspace.dir, path.dirname(bumpResult.packageJsonPath));
+      // Same lifecycle-hook restoration as runCompatStep — runCombinedTest
+      // spawns the app's test command directly with the same sandbox env,
+      // so without this it would silently skip the build here too and could
+      // report the combined state as passing against an unbuilt tree.
+      const plan = await planTestCommand(
+        headAppDir,
+        { testCommand: options.testCommand, testScript: options.testScript },
+        headWorkspace.packageManager,
+      );
       const combinedResult = await runCombinedTest({
         appDir: headAppDir,
         packageManager: headWorkspace.packageManager,
-        testCommand: options.testCommand,
-        testScript: options.testScript,
+        testCommand: plan.testCommand,
+        testScript: plan.testScript,
       });
       combined = combinedResult;
     } finally {
@@ -591,23 +592,8 @@ export async function runGithubPipeline(
     return { status: "static-incompatible", bump, apiDiff: stepResult.apiDiff };
   }
 
-  if (stepResult.kind === "test-command-caveat") {
-    const body = renderTestCommandCaveat(bump, stepResult.message);
-    const commentBody = `${COMMENT_MARKER}\n${body}`;
-
-    await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
-    await options.github.createCheckRun({
-      name: "packdev compat",
-      conclusion: "neutral",
-      title: `${bump.name} ${bump.fromVersion} → ${bump.toVersion}: test command misconfigured`,
-      summary: body,
-    });
-
-    return { status: "test-command-caveat", bump, message: stepResult.message };
-  }
-
   const verdict = stepResult.verdict;
-  const body = await renderWithBrain(verdict, options.brain);
+  const body = withCommandNote(await renderWithBrain(verdict, options.brain), stepResult.commandNote);
   const commentBody = `${COMMENT_MARKER}\n${body}`;
 
   await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
@@ -615,7 +601,7 @@ export async function runGithubPipeline(
     name: "packdev compat",
     conclusion: checkConclusionFor(verdict),
     title: checkTitleFor(verdict, bump),
-    summary: render(verdict),
+    summary: withCommandNote(render(verdict), stepResult.commandNote),
   });
 
   let merged = false;

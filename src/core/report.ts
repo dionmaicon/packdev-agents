@@ -211,25 +211,3 @@ export function renderStaticIncompatible(bump: Bump, apiDiff: ApiDiffReport): st
 
   return lines.join("\n");
 }
-
-/**
- * Renders the testCommandGuard short-circuit path (see testCommandGuard.ts):
- * the configured testCommand/testScript would silently skip a real
- * "pre<script>" build hook this app depends on. Refuses to run the
- * sandboxed compat check at all rather than risk producing a false clean
- * pass — the whole point is that a real compat run here can't be trusted,
- * so there is nothing to render except the misconfiguration itself.
- */
-export function renderTestCommandCaveat(bump: Bump, message: string): string {
-  const lines: string[] = [];
-  lines.push("### packdev compat — ⚠️ Configuration issue — test command would silently skip a build step");
-  lines.push("");
-  lines.push(`**${bump.name}**: \`${bump.fromVersion}\` → \`${bump.toVersion}\``);
-  lines.push("");
-  lines.push(message);
-  lines.push("");
-  lines.push("_No sandboxed install or test ran for this verdict — the result would not be trustworthy._");
-  lines.push("_Not auto-merge eligible — requires human review._");
-
-  return lines.join("\n");
-}

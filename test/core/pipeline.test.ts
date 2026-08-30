@@ -1093,54 +1093,71 @@ test(
   },
 );
 
+/**
+ * Builds a repo whose test suite ONLY passes if its `pretest` build hook
+ * actually ran — `test` reads a file that only `pretest` writes. This is
+ * the mechanism behind the real packdev-demo-nestjs false PASSED, reduced
+ * to its essentials: there, `pretest: "npm run build"` compiled the TS that
+ * `node --test` then loaded, so skipping it meant zero tests ran and npm
+ * still exited 0. Here, skipping it means the test command genuinely fails,
+ * which is what makes these two tests able to tell the difference at all.
+ */
+async function makeBuildDependentRepo(dir: string): Promise<string> {
+  const repoDir = await mkdtemp(path.join(tmpdir(), dir));
+  const pkg = (deps: Record<string, string>) => ({
+    name: "fixture-app",
+    version: "1.0.0",
+    dependencies: deps,
+    scripts: {
+      build: "node -e \"require('fs').writeFileSync('built.marker','ok')\"",
+      pretest: "npm run build",
+      test: "node -e \"if(require('fs').readFileSync('built.marker','utf8')!=='ok')process.exit(1)\"",
+    },
+  });
+  await git(repoDir, ["init", "-q"]);
+  await git(repoDir, ["config", "user.email", "test@test.local"]);
+  await git(repoDir, ["config", "user.name", "test"]);
+  await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.0.0" }), null, 2));
+  await writeFile(path.join(repoDir, ".gitignore"), "built.marker\n");
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "base"]);
+  await git(repoDir, ["branch", "base"]);
+  await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.1.0" }), null, 2));
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "bump"]);
+  return repoDir;
+}
+
 test(
-  "runGithubPipeline: a bare testCommand that would silently skip a real pretest build hook -> test-command-caveat, never auto-merges, no sandboxed compat run attempted",
+  "runGithubPipeline: a bare 'npm test' whose pretest hook builds the app -> the hook is restored and a REAL verdict is produced, not a refusal",
   { timeout: 60_000 },
   async () => {
-    // Real regression this reproduces: packdev-demo-nestjs's `pretest: "npm
-    // run build"` (compiles TS) was silently skipped by our own
-    // --ignore-scripts sandboxing, so `npm test` found zero compiled test
-    // files and exited 0 — a genuinely broken bump reported a clean PASSED
-    // with no caveat anywhere. commander/is-odd stand in for a real bump;
-    // what's under test is the scripts wiring, not the dependency itself.
-    const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-pretest-guard-"));
-    const pkg = (deps: Record<string, string>) => ({
-      name: "fixture-app",
-      version: "1.0.0",
-      dependencies: deps,
-      scripts: { pretest: "node -e \"require('fs').writeFileSync('built.marker','')\"", test: "true" },
-    });
+    const repoDir = await makeBuildDependentRepo("packdev-agents-pretest-restore-");
     try {
-      await git(repoDir, ["init", "-q"]);
-      await git(repoDir, ["config", "user.email", "test@test.local"]);
-      await git(repoDir, ["config", "user.name", "test"]);
-      await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.0.0" }), null, 2));
-      await git(repoDir, ["add", "-A"]);
-      await git(repoDir, ["commit", "-q", "-m", "base"]);
-      await git(repoDir, ["branch", "base"]);
-      await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.1.0" }), null, 2));
-      await git(repoDir, ["add", "-A"]);
-      await git(repoDir, ["commit", "-q", "-m", "bump"]);
-
       const github = fakeGitHubOps();
       const result = await runGithubPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
+        // Exactly the config that used to produce a silent false PASSED
+        // (and, before this, a flat refusal): the natural thing to write.
         testCommand: "npm test",
         github,
         autoMerge: true,
       });
 
-      assert.equal(result.status, "test-command-caveat");
-      if (result.status === "test-command-caveat") {
-        assert.match(result.message, /"pretest"/);
+      // The whole point: the user changed nothing, and still got a real,
+      // trustworthy answer — the build ran, so the test suite genuinely ran.
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "PASSED");
+        assert.equal(result.merged, true);
       }
-      assert.equal(github.checkRuns[0]!.conclusion, "neutral");
-      assert.match(github.comments[0]!.body, /Configuration issue/);
-      assert.match(github.comments[0]!.body, /Not auto-merge eligible/);
-      assert.equal(github.mergeCalls, 0);
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+      // ...and the rewrite is disclosed, so the verdict stays auditable.
+      assert.match(github.comments[0]!.body, /npm run build && npm run test/);
+      assert.match(github.comments[0]!.body, /ignore-scripts/);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
@@ -1148,44 +1165,35 @@ test(
 );
 
 test(
-  "runGithubPipeline: same repo, testCommand chains the build explicitly -> real compat run proceeds normally, no caveat",
+  "runGithubPipeline: the same repo with hook restoration bypassed still fails — proving the test above isn't passing for some unrelated reason",
   { timeout: 60_000 },
   async () => {
-    const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-pretest-guard-chained-"));
-    const pkg = (deps: Record<string, string>) => ({
-      name: "fixture-app",
-      version: "1.0.0",
-      dependencies: deps,
-      scripts: {
-        build: "node -e \"require('fs').writeFileSync('built.marker','')\"",
-        pretest: "node -e \"require('fs').writeFileSync('built.marker','')\"",
-        test: "true",
-      },
-    });
+    // The control for the test above. Passing an already-chained command
+    // that deliberately does NOT include the build takes the passthrough
+    // path (planTestCommand never rewrites a multi-step command), so the
+    // marker file is missing and the suite genuinely fails. If this ever
+    // starts passing, the test above proves nothing.
+    const repoDir = await makeBuildDependentRepo("packdev-agents-pretest-control-");
     try {
-      await git(repoDir, ["init", "-q"]);
-      await git(repoDir, ["config", "user.email", "test@test.local"]);
-      await git(repoDir, ["config", "user.name", "test"]);
-      await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.0.0" }), null, 2));
-      await git(repoDir, ["add", "-A"]);
-      await git(repoDir, ["commit", "-q", "-m", "base"]);
-      await git(repoDir, ["branch", "base"]);
-      await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.1.0" }), null, 2));
-      await git(repoDir, ["add", "-A"]);
-      await git(repoDir, ["commit", "-q", "-m", "bump"]);
-
       const github = fakeGitHubOps();
       const result = await runGithubPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
-        testCommand: "npm run build && npm test",
+        testCommand: "true && npm run test",
         github,
+        autoMerge: true,
       });
 
       assert.equal(result.status, "verdict");
-      if (result.status === "verdict") assert.equal(result.verdict.kind, "PASSED");
+      if (result.status === "verdict") {
+        // HARNESS_BROKEN, not INCOMPATIBLE: the control fails too, which is
+        // exactly right — an unbuilt tree is broken regardless of the bump.
+        assert.equal(result.verdict.kind, "HARNESS_BROKEN");
+        assert.equal(result.merged, false);
+      }
+      assert.equal(github.mergeCalls, 0);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }
