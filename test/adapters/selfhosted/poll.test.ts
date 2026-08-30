@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -244,6 +244,150 @@ test(
       assert.equal(github.comments.length, 1);
       const state = await loadSeenState(statePath);
       assert.equal(state["7"], newHeadSha);
+    } finally {
+      await cleanupRemote();
+      await rm(cloneDir, { recursive: true, force: true });
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "pollOnce: one PR throwing (bad branch, real git error) does not abort the batch — the other PR still gets processed, and the failing one isn't marked seen",
+  { timeout: 120_000 },
+  async () => {
+    const { remoteDir, baseSha, headSha, cleanup: cleanupRemote } = await makeRemoteWithBumpPR();
+    const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-poll-clone-"));
+    const stateDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-poll-state-"));
+    try {
+      const statePath = path.join(stateDir, "state.json");
+      const brokenPr: OpenBotPR = {
+        number: 1,
+        actor: "dependabot[bot]",
+        baseBranch: "main",
+        baseSha,
+        // Doesn't exist on the remote — fetchBranch throws a real git
+        // error, the exact failure mode this test exercises.
+        headBranch: "dependabot/does-not-exist",
+        headSha: "0".repeat(40),
+      };
+      const goodPr: OpenBotPR = {
+        number: 2,
+        actor: "dependabot[bot]",
+        baseBranch: "main",
+        baseSha,
+        headBranch: "dependabot/bump",
+        headSha,
+      };
+      const github = fakeGitHubOps();
+
+      const result = await pollOnce({
+        cloneDir,
+        remoteUrl: remoteDir,
+        statePath,
+        testCommand: "true",
+        prSource: fakePRSource([brokenPr, goodPr]),
+        githubOpsFor: () => github,
+      });
+
+      assert.equal(result.failed.length, 1);
+      assert.equal(result.failed[0]!.pr.number, 1);
+      assert.equal(result.processed.length, 1);
+      assert.equal(result.processed[0]!.pr.number, 2);
+      assert.equal(github.comments.length, 1, "the good PR still got its comment posted");
+
+      const state = await loadSeenState(statePath);
+      assert.equal(state["1"], undefined, "the failing PR must not be marked seen -- it should retry next cycle");
+      assert.equal(state["2"], headSha);
+    } finally {
+      await cleanupRemote();
+      await rm(cloneDir, { recursive: true, force: true });
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "pollOnce: if saveSeenState fails (real write error), the in-memory state mutation is rolled back -- the PR lands only in `failed`, never also in `processed`, and doesn't get silently marked seen by a later PR's successful save",
+  { timeout: 120_000 },
+  async () => {
+    const { remoteDir, baseSha, headSha, cleanup: cleanupRemote } = await makeRemoteWithBumpPR();
+    const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-poll-clone-"));
+    const stateDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-poll-state-"));
+    try {
+      const statePath = path.join(stateDir, "state.json");
+      const firstPr: OpenBotPR = {
+        number: 7,
+        actor: "dependabot[bot]",
+        baseBranch: "main",
+        baseSha,
+        headBranch: "dependabot/bump",
+        headSha,
+      };
+
+      // Cycle 1: succeeds normally, seeds a real state.json on disk.
+      await pollOnce({
+        cloneDir,
+        remoteUrl: remoteDir,
+        statePath,
+        testCommand: "true",
+        prSource: fakePRSource([firstPr]),
+        githubOpsFor: () => fakeGitHubOps(),
+      });
+      const stateAfterCycle1 = await loadSeenState(statePath);
+      assert.equal(stateAfterCycle1["7"], headSha);
+
+      // A second, independent bump PR on a new branch off the same remote.
+      await git(remoteDir, ["checkout", "-q", "-b", "dependabot/bump-2"]);
+      await writeFile(
+        path.join(remoteDir, "package.json"),
+        JSON.stringify({ name: "fixture-app", version: "1.0.0", dependencies: { "is-odd": "3.0.0", commander: "11.1.0" } }, null, 2),
+      );
+      await git(remoteDir, ["add", "-A"]);
+      await git(remoteDir, ["commit", "-q", "-m", "bump commander"]);
+      const secondHeadSha = await git(remoteDir, ["rev-parse", "dependabot/bump-2"]);
+      await git(remoteDir, ["checkout", "-q", "main"]);
+
+      const secondPr: OpenBotPR = {
+        number: 8,
+        actor: "dependabot[bot]",
+        baseBranch: "main",
+        baseSha,
+        headBranch: "dependabot/bump-2",
+        headSha: secondHeadSha,
+      };
+
+      // Force every save in cycle 2 to fail with a real write error, not
+      // a mock — read-only permissions on the real state file.
+      await chmod(statePath, 0o444);
+      const github = fakeGitHubOps();
+      let result;
+      try {
+        result = await pollOnce({
+          cloneDir,
+          remoteUrl: remoteDir,
+          statePath,
+          testCommand: "true",
+          prSource: fakePRSource([secondPr]),
+          githubOpsFor: () => github,
+        });
+      } finally {
+        await chmod(statePath, 0o644); // restore so cleanup/rm can delete it
+      }
+
+      assert.equal(result.failed.length, 1);
+      assert.equal(result.failed[0]!.pr.number, 8);
+      assert.equal(
+        result.processed.length,
+        0,
+        "must not appear in `processed` when its own save failed, even though runGithubPipeline itself succeeded",
+      );
+
+      // The on-disk state must still show ONLY PR #7 -- unchanged by the
+      // failed cycle, not corrupted with PR #8's SHA despite its save
+      // never having succeeded.
+      const stateAfterCycle2 = await loadSeenState(statePath);
+      assert.deepEqual(stateAfterCycle2, { "7": headSha });
     } finally {
       await cleanupRemote();
       await rm(cloneDir, { recursive: true, force: true });

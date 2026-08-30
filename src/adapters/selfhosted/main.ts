@@ -3,7 +3,7 @@ import * as githubApi from "@actions/github";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../../core/brain.js";
 import { createOctokitOps } from "../shared/octokitOps.js";
 import { createOctokitPullRequestSource } from "./discoverPRs.js";
-import { pollOnce } from "./poll.js";
+import { pollOnce, type PollResult } from "./poll.js";
 
 function env(name: string): string | undefined {
   return process.env[name];
@@ -45,7 +45,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runOnce(): Promise<void> {
+async function runOnce(): Promise<PollResult> {
   const [owner, repo] = requireEnv("REPO").split("/");
   if (!owner || !repo) {
     throw new Error(`REPO must be "owner/repo", got "${env("REPO")}"`);
@@ -124,13 +124,31 @@ async function runOnce(): Promise<void> {
       `Skipped (already processed at current head): ${result.skippedAlreadySeen.map((pr) => `#${pr.number}`).join(", ")}`,
     );
   }
+  // Logged, not thrown: one PR failing must not take down the whole poll
+  // cycle or the process running it — see pollOnce's doc comment. These
+  // PRs weren't marked as seen, so they're retried next cycle. main()'s
+  // --once path still surfaces this as a nonzero exit code (see below) —
+  // logging alone isn't enough for a cron/scheduler to notice.
+  for (const { pr, error } of result.failed) {
+    console.error(`PR #${pr.number}: FAILED this cycle, will retry next cycle — ${String(error)}`);
+  }
+
+  return result;
 }
 
 async function main(): Promise<void> {
   const once = process.argv.includes("--once");
 
   if (once) {
-    await runOnce();
+    const result = await runOnce();
+    // Per-PR isolation (pollOnce's own try/catch) means a failed PR no
+    // longer throws all the way up to main().catch below, which used to
+    // set process.exitCode = 1 automatically. Without this check, a
+    // cron/scheduler running --once would see exit 0 and treat a batch
+    // with real failures as a healthy run — caught in review.
+    if (result.failed.length > 0) {
+      process.exitCode = 1;
+    }
     return;
   }
 

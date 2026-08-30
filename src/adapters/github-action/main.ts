@@ -1,7 +1,12 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 
-import { runGithubPipeline, checkConclusionFor } from "../../core/pipeline.js";
+import {
+  runGithubPipeline,
+  checkConclusionFor,
+  checkConclusionForCrossFile,
+  checkConclusionForIndependent,
+} from "../../core/pipeline.js";
 import { createOctokitOps } from "../shared/octokitOps.js";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../../core/brain.js";
 
@@ -118,14 +123,13 @@ async function run(): Promise<void> {
   }
 
   if (result.status === "cross-file-verdict") {
-    const conclusions = result.results.map((r) =>
-      r.step.kind === "static-incompatible" ? "failure" : checkConclusionFor(r.step.verdict),
-    );
-    const worst = conclusions.includes("failure")
-      ? "failure"
-      : conclusions.includes("neutral")
-        ? "neutral"
-        : "success";
+    // Delegates to pipeline.ts's own checkConclusionForCrossFile rather
+    // than reimplementing the aggregation rule here — a divergence
+    // between this file's copy and pipeline.ts's copy was flagged as a
+    // real maintainability risk in review (they were in sync then, but
+    // only by staying manually so); one shared implementation removes
+    // that risk entirely.
+    const worst = checkConclusionForCrossFile(result.results);
     core.setOutput("merged", String(result.merged));
     core.info(
       `Cross-file bump — ${result.bump.name} ${result.bump.toVersion} across ` +
@@ -138,15 +142,7 @@ async function run(): Promise<void> {
   }
 
   if (result.status === "independent-verdict") {
-    const stepConclusions = result.results.map((r) =>
-      r.step.kind === "static-incompatible" ? "failure" : checkConclusionFor(r.step.verdict),
-    );
-    const combinedFailed = result.combined.kind === "failed";
-    const worst = stepConclusions.includes("failure") || combinedFailed
-      ? "failure"
-      : stepConclusions.includes("neutral")
-        ? "neutral"
-        : "success";
+    const worst = checkConclusionForIndependent(result.results, result.combined);
     core.setOutput("merged", String(result.merged));
     core.info(
       `Independent bumps — ${result.results.length} packages to differing versions: ${worst} ` +

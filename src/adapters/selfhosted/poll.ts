@@ -30,9 +30,22 @@ export interface ProcessedPR {
   result: RunGithubPipelineResult;
 }
 
+export interface FailedPR {
+  pr: OpenBotPR;
+  error: unknown;
+}
+
 export interface PollResult {
   processed: ProcessedPR[];
   skippedAlreadySeen: OpenBotPR[];
+  /**
+   * PRs that threw during this cycle (fetch/git error, a real bug in the
+   * pipeline, etc). Deliberately NOT included in `processed` and their
+   * headSha is deliberately NOT saved as seen — see pollOnce's doc
+   * comment for why that's the right call, and why this list exists
+   * instead of just logging and moving on silently.
+   */
+  failed: FailedPR[];
 }
 
 /**
@@ -42,6 +55,17 @@ export interface PollResult {
  * saved after EACH PR, not once at the end — a crash partway through a
  * batch must not lose progress already made or cause already-handled PRs
  * to be reprocessed and re-commented on restart.
+ *
+ * Each PR is isolated in its own try/catch: previously a single throwing
+ * PR (a transient git/network error, or a real bug) aborted the ENTIRE
+ * pollOnce() call, silently skipping every PR after it in this cycle's
+ * list — and since the failing PR's headSha was never saved, it would
+ * retry and fail again in the same position next cycle, potentially
+ * starving every newer PR indefinitely. A failure here is collected into
+ * `failed` and processing continues with the next PR; the failing PR's
+ * headSha is still deliberately not saved, so it's retried next cycle
+ * (the one property worth keeping from the old behavior), but it no
+ * longer blocks anyone else.
  */
 export async function pollOnce(options: PollOptions): Promise<PollResult> {
   await ensureLocalClone({ cloneDir: options.cloneDir, remoteUrl: options.remoteUrl });
@@ -52,6 +76,7 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
 
   const processed: ProcessedPR[] = [];
   const skippedAlreadySeen: OpenBotPR[] = [];
+  const failed: FailedPR[] = [];
 
   for (const pr of allPRs) {
     if (!allowedActors.includes(pr.actor)) continue;
@@ -61,31 +86,53 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
       continue;
     }
 
-    await fetchBranch(options.cloneDir, pr.baseBranch);
-    await fetchBranch(options.cloneDir, pr.headBranch);
+    try {
+      await fetchBranch(options.cloneDir, pr.baseBranch);
+      await fetchBranch(options.cloneDir, pr.headBranch);
 
-    const result = await runGithubPipeline({
-      repoDir: options.cloneDir,
-      // Exact SHAs from the PR API response, not the branch names just
-      // fetched — a branch can move between the fetch above and
-      // extractBump/prepareWorkspace reading it; the SHA can't.
-      baseRef: pr.baseSha,
-      headRef: pr.headSha,
-      actor: pr.actor,
-      ...(options.testScript ? { testScript: options.testScript } : { testCommand: options.testCommand }),
-      github: options.githubOpsFor(pr),
-      allowedActors: options.allowedActors,
-      autoMerge: options.autoMerge,
-      brain: options.brain,
-      ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
-      ...(options.testCombinedBump !== undefined ? { testCombinedBump: options.testCombinedBump } : {}),
-    });
+      const result = await runGithubPipeline({
+        repoDir: options.cloneDir,
+        // Exact SHAs from the PR API response, not the branch names just
+        // fetched — a branch can move between the fetch above and
+        // extractBump/prepareWorkspace reading it; the SHA can't.
+        baseRef: pr.baseSha,
+        headRef: pr.headSha,
+        actor: pr.actor,
+        ...(options.testScript ? { testScript: options.testScript } : { testCommand: options.testCommand }),
+        github: options.githubOpsFor(pr),
+        allowedActors: options.allowedActors,
+        autoMerge: options.autoMerge,
+        brain: options.brain,
+        ...(options.packageJsonPath ? { packageJsonPath: options.packageJsonPath } : {}),
+        ...(options.testCombinedBump !== undefined ? { testCombinedBump: options.testCombinedBump } : {}),
+      });
 
-    processed.push({ pr, result });
+      // Mutate `state` and persist BEFORE pushing to `processed` — if
+      // saveSeenState throws (a transient disk error), the mutation is
+      // rolled back before the catch below runs. Getting this order
+      // backwards was a real bug caught in review: with the mutation and
+      // push happening first, a failed save still left the in-memory
+      // `state` object holding this PR's new SHA, so a LATER PR's
+      // successful save would serialize that stale mutation to disk
+      // anyway — silently marking a PR "seen" despite its own save
+      // failing, so it would never actually retry. The old ordering also
+      // let a PR appear in both `processed` and `failed` simultaneously,
+      // contradicting PollResult's contract that they're exclusive.
+      const previousSha = state[String(pr.number)];
+      state[String(pr.number)] = pr.headSha;
+      try {
+        await saveSeenState(options.statePath, state);
+      } catch (saveError) {
+        if (previousSha === undefined) delete state[String(pr.number)];
+        else state[String(pr.number)] = previousSha;
+        throw saveError;
+      }
 
-    state[String(pr.number)] = pr.headSha;
-    await saveSeenState(options.statePath, state);
+      processed.push({ pr, result });
+    } catch (error) {
+      failed.push({ pr, error });
+    }
   }
 
-  return { processed, skippedAlreadySeen };
+  return { processed, skippedAlreadySeen, failed };
 }
