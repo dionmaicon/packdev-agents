@@ -19,6 +19,11 @@ jobs:
         with:
           node-version: "24"
 
+      # prepareWorkspace supports pnpm-lock.yaml repos and the test suite
+      # exercises a real pnpm install — pnpm isn't preinstalled on the
+      # runner image, corepack ships with Node and can activate it.
+      - run: corepack enable && corepack prepare pnpm@latest --activate
+
       - run: npm ci
 
       - run: npm test

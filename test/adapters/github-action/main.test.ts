@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,10 +25,12 @@ const mainJs = path.join(repoRoot, "dist", "adapters", "github-action", "main.js
 async function runMain(
   eventPayload: unknown,
   extraEnv: Record<string, string> = {},
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+): Promise<{ stdout: string; stderr: string; exitCode: number; outputs: Record<string, string> }> {
   const eventDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-event-"));
   const eventPath = path.join(eventDir, "event.json");
+  const outputPath = path.join(eventDir, "github-output.txt");
   await writeFile(eventPath, JSON.stringify(eventPayload));
+  await writeFile(outputPath, "");
 
   try {
     const result = await execFileAsync(
@@ -40,6 +42,12 @@ async function runMain(
           GITHUB_EVENT_PATH: eventPath,
           GITHUB_EVENT_NAME: "pull_request",
           GITHUB_REPOSITORY: "octocat/hello-world",
+          // Always route to a real temp file, overriding whatever the
+          // outer process inherited — a real Actions runner always sets
+          // GITHUB_OUTPUT, so @actions/core's setOutput writes there (a
+          // file), never to stdout. Asserting on stdout only "worked" by
+          // accident on a dev machine where this var happens to be unset.
+          GITHUB_OUTPUT: outputPath,
           "INPUT_TEST-COMMAND": "true",
           "INPUT_GITHUB-TOKEN": "fake-token-not-used-on-these-paths",
           "INPUT_AUTO-MERGE": "false",
@@ -51,10 +59,17 @@ async function runMain(
       },
     ).catch((error: { stdout: string; stderr: string; code: number }) => error);
 
+    const outputContents = await readFile(outputPath, "utf8").catch(() => "");
+    const outputs: Record<string, string> = {};
+    for (const match of outputContents.matchAll(/^([^=<]+)<<(\S+)\r?\n([\s\S]*?)\r?\n\2$/gm)) {
+      outputs[match[1]!] = match[3]!;
+    }
+
     return {
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: "code" in result ? (result.code ?? 0) : 0,
+      outputs,
     };
   } finally {
     await rm(eventDir, { recursive: true, force: true });
@@ -70,7 +85,7 @@ test("main.js: no pull_request payload -> fails the step with a clear message, n
 });
 
 test("main.js: actor not in allowed-actors -> exits 0, sets status output, makes no GitHub API call", async () => {
-  const { stdout, exitCode } = await runMain({
+  const { stdout, exitCode, outputs } = await runMain({
     pull_request: {
       number: 1,
       user: { login: "some-human" },
@@ -79,6 +94,6 @@ test("main.js: actor not in allowed-actors -> exits 0, sets status output, makes
     },
   });
   assert.equal(exitCode, 0);
-  assert.match(stdout, /status::skipped-actor/);
+  assert.equal(outputs["status"], "skipped-actor");
   assert.match(stdout, /not in allowed-actors/);
 });
