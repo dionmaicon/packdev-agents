@@ -74,6 +74,43 @@ test("extractBump: single dependency version bump", async () => {
   }
 });
 
+test("extractBump: a caret/tilde-RANGE bump is normalized to its concrete version — real bug, packdev rejects a raw range string", async () => {
+  // Real Dependabot behavior for a caret/tilde-ranged devDependency (the
+  // overwhelming majority of them): it bumps the range itself, e.g.
+  // "^22.0.0" -> "^22.20.1", not a bare version. Confirmed for real:
+  // `packdev compat pkg --versions "^22.20.1"` returns an error-shaped
+  // JSON with no `versions` field at all — passing the raw range through
+  // used to crash deep in interpret()'s candidatesOf() on `.filter` of
+  // undefined. fromVersion/toVersion must be the concrete resolved
+  // version (semver.minVersion) everywhere downstream, not the raw
+  // package.json specifier.
+  const repoDir = await makeRepo();
+  try {
+    await writePackageJson(repoDir, {
+      name: "app",
+      devDependencies: { "@types/node": "^22.0.0" },
+    });
+    await commit(repoDir, "base");
+    await git(repoDir, ["branch", "base"]);
+
+    await writePackageJson(repoDir, {
+      name: "app",
+      devDependencies: { "@types/node": "^22.20.1" },
+    });
+    await commit(repoDir, "bump @types/node range");
+
+    const result = await extractBump({ repoDir, baseRef: "base", headRef: "HEAD" });
+
+    assert.equal(isUnsupported(result), false);
+    if (!isUnsupported(result)) {
+      assert.equal(result.fromVersion, "22.0.0");
+      assert.equal(result.toVersion, "22.20.1");
+    }
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
 test("extractBump: grouped bump with DIFFERING target versions returns Unsupported with all bumps listed", async () => {
   const repoDir = await makeRepo();
   try {

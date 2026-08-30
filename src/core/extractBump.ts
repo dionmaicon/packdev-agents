@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import semver from "semver";
 
 const execFileAsync = promisify(execFile);
 
@@ -121,6 +122,31 @@ async function readPackageJsonAt(
   return parsed as PackageJsonDeps;
 }
 
+/**
+ * Real Dependabot PRs frequently bump a RANGE specifier, not just an exact
+ * pin (e.g. "^22.0.0" -> "^22.20.1" for a caret-ranged devDependency,
+ * extremely common — most devDependencies use "^"/"~", not exact pins).
+ * packdev's own --versions/--range flags need a concrete version, not a
+ * range: passed through unnormalized, packdev rejects it outright
+ * (confirmed: `packdev compat pkg --versions "^22.20.1"` returns
+ * `{"success":false,"error":"Error: Invalid version(s): ^22.20.1"}`, an
+ * error-shaped JSON with no `versions` field at all — silently NOT a
+ * CompatReport, which used to crash interpret()'s candidatesOf() on
+ * `.filter` of undefined; see runCompat.ts's defensive guard against that
+ * shape too). semver.minVersion() resolves a range to the exact version
+ * Dependabot actually intends here — for a bump target this is always the
+ * new minimum of the range, never a real ambiguity ("^22.20.1" means
+ * "resolves to 22.20.1 right now"). Bump.toVersion/fromVersion are this
+ * concrete form everywhere downstream — report/comment text, api-diff,
+ * compat — not the raw package.json specifier, so every version
+ * comparison against packdev's own (always-concrete) responses stays
+ * consistent.
+ */
+function toConcreteVersion(spec: string): string {
+  const resolved = semver.minVersion(spec);
+  return resolved ? resolved.version : spec;
+}
+
 /** Every real dependency-version bump found in one specific package.json between two refs. Usually zero or one; more than one means a grouped update within that single file. */
 async function bumpsInFile(
   repoDir: string,
@@ -146,7 +172,13 @@ async function bumpsInFile(
       if (!isRegistrySpecifier(fromVersion) || !isRegistrySpecifier(toVersion)) {
         continue; // e.g. workspace:/file:/git — not a registry version bump
       }
-      bumps.push({ name, fromVersion, toVersion, section, packageJsonPath });
+      bumps.push({
+        name,
+        fromVersion: toConcreteVersion(fromVersion),
+        toVersion: toConcreteVersion(toVersion),
+        section,
+        packageJsonPath,
+      });
     }
   }
 

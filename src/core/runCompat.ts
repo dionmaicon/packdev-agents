@@ -94,5 +94,20 @@ export async function runCompat(
     );
   }
 
+  // Valid JSON but not a CompatReport: packdev's own input-rejection shape
+  // is `{command, package, success: false, error}` (e.g. an invalid/range
+  // version string — see extractBump.ts's toConcreteVersion doc comment
+  // for a confirmed real example). Silently proceeding would hand
+  // interpret() a report with no `versions` array, which crashes deep in
+  // candidatesOf() rather than surfacing what actually went wrong.
+  if (!Array.isArray(report.versions)) {
+    const asError = report as unknown as { error?: string; success?: boolean };
+    throw new Error(
+      `packdev compat did not return a CompatReport (exit ${exitCode})` +
+        (asError.error ? `: ${asError.error}` : "") +
+        `\nstdout: ${stdout.slice(0, 2000)}\nstderr: ${stderr.slice(0, 2000)}`,
+    );
+  }
+
   return { report, exitCode, stderr };
 }

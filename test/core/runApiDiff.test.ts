@@ -92,6 +92,34 @@ test("runApiDiff: invalid JSON on stdout is a hard error, not a silent fallback"
   }
 });
 
+test("runApiDiff: packdev's own error-shaped JSON (valid JSON, no versions[]) is a hard error", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "packdev-agents-apidiff-fakebin-"));
+  try {
+    const errorShape = { command: "api-diff", package: "some-pkg", success: false, error: "Error: Invalid range: ^1.1.0" };
+    const binPath = await writeFakeBin(
+      dir,
+      `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(errorShape))});\nprocess.exit(1);\n`,
+    );
+    const appDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-apidiff-app-"));
+    try {
+      await assert.rejects(
+        () =>
+          runApiDiff({
+            appDir,
+            packageName: "some-pkg",
+            toVersion: "^1.1.0",
+            binPathOverride: binPath,
+          }),
+        /did not return an ApiDiffReport.*Invalid range/s,
+      );
+    } finally {
+      await rm(appDir, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runApiDiff: passes toVersion as an exact-match --range", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "packdev-agents-apidiff-fakebin-"));
   try {

@@ -149,6 +149,19 @@ inward only.
 and vary between Dependabot and Renovate, ecosystems, and grouped-update
 configs.
 
+`fromVersion`/`toVersion` are always the CONCRETE resolved version
+(`semver.minVersion()`), never the raw package.json specifier. Real
+Dependabot PRs frequently bump a RANGE, not just an exact pin — e.g.
+`"^22.0.0"` -> `"^22.20.1"` for a caret-ranged devDependency, extremely
+common (most devDependencies use `^`/`~`, not exact pins). Passed through
+unnormalized, packdev's own `--versions`/`--range` flags reject a range
+outright and return an error-shaped JSON with no `versions` field —
+real bug, found live: this used to crash deep in `interpret()`'s
+`candidatesOf()` on `.filter` of `undefined` instead of surfacing what
+went wrong. `runCompat.ts`/`runApiDiff.ts` both now also guard directly
+against that shape (any packdev-level input rejection, not just this one)
+and throw a clear error instead.
+
 `packageJsonPath` is auto-discovered by default: every `package.json` that
 actually changed between the PR's base and head is found via `git diff
 --name-only`, and each is checked for a real dependency-version change. A
@@ -288,6 +301,26 @@ transpile-only jest transform (`ts-jest` `isolatedModules`, `babel-jest`,
 `tsc --noEmit` sees only type breaks — both can report `PASSED` over a real
 incompatibility. Caveat text is always surfaced verbatim in the PR comment
 and always blocks auto-merge.
+
+**Known limitation, found live testing this:** caveat detection only works
+when `test-command` IS the app's literal underlying invocation (e.g.
+`tsc --noEmit`) — packdev's own `analyzeTestHarness` pattern-matches the
+literal `--test` string it's given (an anchored regex on the whole
+command), so it can never see through an indirection layer. Since this
+Action's `test-command` input is passed straight through as `--test`, and
+the common real value is `"npm test"` (an indirection, not the app's
+actual script body), `TYPE_CHECK_ONLY`/`TRANSPILE_ONLY`/`PASS_WITH_NO_TESTS`
+will never fire for any app using this Action with a plain `npm test`
+config — confirmed live: identical bump, identical app, `testCommandCaveats:
+[]` with `test-command: "npm test"`, but the real `TYPE_CHECK_ONLY` caveat
+with `test-command: "npx tsc --noEmit"` (the app's literal script body).
+packdev's own CLI already has the right mechanism for this —
+`--test-script <name>` resolves the NAMED script from each target's own
+package.json (both to run it and to analyze its real body for caveats,
+see `resolveHarnessCommand` in packdev's source) — but `runCompat.ts` only
+ever uses `--test`, never `--test-script`. Wiring that through (accepting
+a script name in addition to a literal command) is future work, not yet
+built.
 
 If `api-diff` is run as a pre-check, `apiCompatible` is **tri-state**:
 `null` means "could not verify" and is never treated as either a pass or a

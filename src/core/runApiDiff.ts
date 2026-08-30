@@ -93,5 +93,18 @@ export async function runApiDiff(
     );
   }
 
+  // Same defensive shape check as runCompat.ts: valid JSON but not an
+  // ApiDiffReport means packdev rejected the input (its own error shape is
+  // {command, package, success: false, error}) — surface that clearly
+  // instead of handing pipeline.ts a report with no `versions` array.
+  if (!Array.isArray(report.versions)) {
+    const asError = report as unknown as { error?: string; success?: boolean };
+    throw new Error(
+      `packdev api-diff did not return an ApiDiffReport (exit ${exitCode})` +
+        (asError.error ? `: ${asError.error}` : "") +
+        `\nstdout: ${stdout.slice(0, 2000)}\nstderr: ${stderr.slice(0, 2000)}`,
+    );
+  }
+
   return { report, exitCode, stderr };
 }

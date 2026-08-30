@@ -178,6 +178,38 @@ test("runCompat: invalid JSON on stdout is a hard error, not a silent fallback",
   }
 });
 
+test("runCompat: packdev's own error-shaped JSON (valid JSON, no versions[]) is a hard error, not undefined.filter downstream", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "packdev-agents-fakebin-"));
+  try {
+    // Real shape confirmed against the actual CLI: `packdev compat pkg
+    // --versions "^22.20.1"` (an unnormalized range string) returns
+    // exactly this — valid JSON, but not a CompatReport.
+    const errorShape = { command: "compat", package: "some-pkg", success: false, error: "Error: Invalid version(s): ^1.1.0" };
+    const binPath = await writeFakeBin(
+      dir,
+      `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(errorShape))});\nprocess.exit(1);\n`,
+    );
+    const appDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-app-"));
+    try {
+      await assert.rejects(
+        () =>
+          runCompat({
+            appDir,
+            packageName: "some-pkg",
+            versions: ["^1.1.0"],
+            testCommand: "true",
+            binPathOverride: binPath,
+          }),
+        /did not return a CompatReport.*Invalid version/s,
+      );
+    } finally {
+      await rm(appDir, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test(
   "runCompat: end-to-end against the real installed packdev CLI",
   { timeout: 120_000 },
