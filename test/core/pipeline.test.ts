@@ -1176,7 +1176,18 @@ test(
       version: "1.0.0",
       dependencies: deps,
       // A real runner, a real exit 0, and genuinely nothing to run.
-      scripts: { test: "node --test" },
+      //
+      // --test-reporter=tap is pinned deliberately. Node 24 changed the
+      // default non-TTY reporter from tap to spec ("ℹ tests 0" instead of
+      // "# tests 0"), and packdev's count parser only matches the TAP form
+      // — so on Node 24 testCounts comes back undefined and the caveat
+      // never fires (real gap, reported upstream as dionmaicon/packdev#8;
+      // this test failed on CI's Node 24 while passing on local Node 22,
+      // which is how it was found). Pinning it here keeps this test about
+      // what it actually covers — that the PIPELINE refuses to auto-merge
+      // a zero-test run — instead of silently doubling as a probe of
+      // packdev's reporter-format coverage, which belongs upstream.
+      scripts: { test: "node --test --test-reporter=tap" },
     });
     try {
       await git(repoDir, ["init", "-q"]);
