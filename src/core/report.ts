@@ -59,6 +59,24 @@ function alwaysSurfacedWarnings(verdict: Verdict): string[] {
   }
 
   for (const version of report.versions) {
+    // A "pass" that ran zero tests is the exact shape of the silent false
+    // PASSED this project hit live (dionmaicon/packdev#6). packdev 0.4.3+
+    // already raises PASS_WITH_NO_TESTS for it above, which downgrades the
+    // verdict to PASSED_WEAK — this surfaces the underlying count so a
+    // reviewer can see the evidence, not just the conclusion.
+    //
+    // Gated on PASSED, matching packdev's own display and its
+    // detectDynamicNoTestsCaveat (both check status === "PASSED"): a
+    // FAILED version can also report testsRun 0 — a runner that treats an
+    // empty suite as an error, or a build step that died before any test
+    // ran — and saying that outcome "confirms nothing" would discard real
+    // incompatibility evidence for a candidate-only failure.
+    if (version.status === "PASSED" && version.testCounts?.testsRun === 0) {
+      warnings.push(
+        `⚠️ **Zero tests executed** on \`${version.version}\` — the harness exited without running anything ` +
+          `(runner: \`${version.testCounts.source}\`), so this result confirms nothing about the bump.`,
+      );
+    }
     if (version.esmMismatch) {
       warnings.push(`⚠️ **ESM mismatch** on \`${version.version}\`: ${version.esmMismatch}`);
     }

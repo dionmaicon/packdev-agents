@@ -182,7 +182,14 @@ export async function prepareWorkspace(
     await execFileAsync(command, args, {
       cwd: dir,
       maxBuffer: 200 * 1024 * 1024,
-      env: buildSandboxEnv(),
+      // ignoreScripts belongs here specifically: this is an install of
+      // PR-influenced dependencies and NO app test command runs in this
+      // child, so there is no lifecycle hook it can wrongly suppress —
+      // unlike the packdev/test-command children, which is what made the
+      // old blanket default a real bug (see childEnv.ts). Reinforces the
+      // explicit --ignore-scripts flag installCommand already passes,
+      // which yarn v1 classic doesn't reliably honor on its own.
+      env: buildSandboxEnv(process.env, { ignoreScripts: true }),
     });
 
     return { dir, packageManager, cleanup };

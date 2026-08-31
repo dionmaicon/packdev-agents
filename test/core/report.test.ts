@@ -168,6 +168,54 @@ test("render: esmMismatch and dupesRegression are surfaced even on a PASSED verd
   assert.match(md, /`lodash` 1 → 2/);
 });
 
+test("render: a PASSED version that executed zero tests is called out explicitly", () => {
+  const control = version({ version: "1.0.0", status: "PASSED" });
+  const candidate = version({
+    version: "1.1.0",
+    status: "PASSED",
+    testCounts: { testsRun: 0, testsFailed: 0, source: "node-test" },
+  });
+  const r = report({ versions: [control, candidate], control });
+  const md = render(interpret(r, PACKDEV_EXIT_CODE.SUCCESS));
+
+  assert.match(md, /Zero tests executed/);
+  assert.match(md, /node-test/);
+});
+
+test("render: a FAILED version reporting zero tests is NOT called 'confirms nothing' — that would discard real incompatibility evidence", () => {
+  // A runner can treat an empty suite as an error, or a build step can die
+  // before any test runs. Both are genuine candidate failures. packdev's own
+  // display and its detectDynamicNoTestsCaveat gate on status === "PASSED"
+  // for exactly this reason.
+  const control = version({ version: "1.0.0", status: "PASSED" });
+  const candidate = version({
+    version: "1.1.0",
+    status: "FAILED",
+    testCounts: { testsRun: 0, testsFailed: 0, source: "node-test" },
+  });
+  const r = report({ versions: [control, candidate], control });
+  const verdict = interpret(r, PACKDEV_EXIT_CODE.COMPAT_FAILED);
+  const md = render(verdict);
+
+  assert.equal(verdict.kind, "INCOMPATIBLE");
+  assert.doesNotMatch(md, /Zero tests executed/);
+  assert.match(md, /incompatible with this app/);
+});
+
+test("render: a null testsFailed (runner reported a total but no failure count) renders without crashing", () => {
+  const control = version({ version: "1.0.0", status: "PASSED" });
+  const candidate = version({
+    version: "1.1.0",
+    status: "PASSED",
+    testCounts: { testsRun: 0, testsFailed: null, source: "mixed" },
+  });
+  const r = report({ versions: [control, candidate], control });
+  const md = render(interpret(r, PACKDEV_EXIT_CODE.SUCCESS));
+
+  assert.match(md, /Zero tests executed/);
+  assert.match(md, /mixed/);
+});
+
 test("render: long output is truncated with a marker, not silently dropped", () => {
   const bigOutput = "x".repeat(5000);
   const control = version({ version: "1.0.0", status: "PASSED" });

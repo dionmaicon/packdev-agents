@@ -1,8 +1,8 @@
 /**
  * Report shapes mirrored from packdev's own TS source (src/compat.ts,
- * src/index.ts), pinned against packdev ^0.4.2. packdev ships no versioned
+ * src/index.ts), pinned against packdev 0.4.4. packdev ships no versioned
  * JSON schema — these interfaces ARE the contract. Re-verify against
- * packdev's source on any packdev minor bump. See docs/architecture.md.
+ * packdev's source on any packdev bump. See docs/architecture.md.
  */
 
 export type CompatStatus = "PASSED" | "FAILED" | "INSTALL_FAILED" | "SKIPPED";
@@ -21,6 +21,28 @@ export interface ConsumerTestResult {
   output?: string | undefined;
 }
 
+/**
+ * Best-effort counts scraped from the test runner's own summary output
+ * (packdev 0.4.3+). `undefined` — never a false zero — when no known
+ * runner format could be parsed, so a missing count is unambiguously
+ * "couldn't tell" rather than "nothing ran". packdev's own doc comment is
+ * explicit that a consumer gating auto-merge on `testsRun > 0` must treat
+ * `undefined` as unknown and fall back to its own policy.
+ */
+export interface TestCounts {
+  testsRun: number;
+  /**
+   * `null` when the total was parsed but the failure count wasn't — some
+   * recognized runners report only a total, and packdev deliberately keeps
+   * this null rather than defaulting to 0, which would look more complete
+   * than the input justifies. Consumers must null-check before any
+   * arithmetic or comparison.
+   */
+  testsFailed: number | null;
+  /** Closed union in packdev's own contract; "mixed" when a fan-out run matched more than one runner format. */
+  source: "node-test" | "jest" | "vitest" | "mocha" | "mixed";
+}
+
 export interface CompatVersionResult {
   version: string;
   status: CompatStatus;
@@ -33,12 +55,22 @@ export interface CompatVersionResult {
   dupesRegression?: DupesRegressionEntry[] | undefined;
   esmMismatch?: string | undefined;
   consumers?: ConsumerTestResult[] | undefined;
+  testCounts?: TestCounts | undefined;
 }
 
 export type TestHarnessCaveatCode =
   | "TRANSPILE_ONLY"
   | "TYPE_CHECK_ONLY"
-  | "PASS_WITH_NO_TESTS";
+  /**
+   * As of packdev 0.4.3 this fires DYNAMICALLY too — when a run exits 0
+   * having reported zero tests executed, not just when the command string
+   * statically looks test-less. That is the exact silent-false-PASSED
+   * shape this repo hit live (dionmaicon/packdev#6), and interpret() maps
+   * any caveat to PASSED_WEAK, which is never auto-merge eligible.
+   */
+  | "PASS_WITH_NO_TESTS"
+  /** packdev 0.4.3+: --ignore-install-scripts couldn't be honored (an unresolvable yarn generation), surfaced instead of silently no-op'ing. */
+  | "IGNORE_SCRIPTS_UNSUPPORTED";
 
 export interface TestHarnessCaveat {
   code: TestHarnessCaveatCode;

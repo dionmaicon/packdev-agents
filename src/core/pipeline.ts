@@ -292,7 +292,8 @@ async function runCompatStep(
 
 /** Renders one CompatStepResult's body — shared between the single-bump and cross-file-per-app comment paths. */
 function renderStep(step: CompatStepResult, bump: Bump): string {
-  return step.kind === "static-incompatible" ? renderStaticIncompatible(bump, step.apiDiff) : render(step.verdict);
+  if (step.kind === "static-incompatible") return renderStaticIncompatible(bump, step.apiDiff);
+  return render(step.verdict);
 }
 
 function renderCombined(combined: CombinedResult): string {

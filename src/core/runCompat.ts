@@ -87,6 +87,14 @@ export async function runCompat(
     "--versions",
     options.versions.join(","),
     ...(options.testScript ? ["--test-script", options.testScript] : ["--test", options.testCommand!]),
+    // The candidate version is arbitrary registry code proposed by a bot,
+    // so its install scripts must not execute. packdev 0.4.3+ scopes this
+    // to its OWN sandbox install, leaving the --test phase with normal npm
+    // lifecycle behavior — which is exactly the distinction the previous
+    // approach (npm_config_ignore_scripts process-wide) could not make,
+    // and why it silently suppressed the app's own pretest build hook and
+    // produced a false PASSED. See childEnv.ts and dionmaicon/packdev#6.
+    "--ignore-install-scripts",
     "--json",
     ...(options.registryUrl ? ["--registry", options.registryUrl] : []),
     ...(options.extraArgs ?? []),
@@ -100,12 +108,11 @@ export async function runCompat(
     const result = await execFileAsync(process.execPath, args, {
       cwd: options.appDir,
       maxBuffer: 50 * 1024 * 1024,
-      // packdev's own compat command does ITS OWN sandbox install of the
-      // candidate version(s) internally — this repo has no CLI flag to
-      // tell it --ignore-scripts, so npm_config_ignore_scripts (read by
-      // npm/pnpm as config, confirmed empirically) is the only lever
-      // available here. Also strips GITHUB_TOKEN/brain API keys from
-      // this entire process tree — see childEnv.ts.
+      // Deliberately WITHOUT ignoreScripts: the candidate install is
+      // handled by --ignore-install-scripts above, and setting it here
+      // would suppress the app's own pretest/prebuild hooks during the
+      // --test phase too (see childEnv.ts). Still strips GITHUB_TOKEN and
+      // brain API keys from this whole process tree.
       env: buildSandboxEnv(),
     });
     stdout = result.stdout;

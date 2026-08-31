@@ -1092,3 +1092,140 @@ test(
     }
   },
 );
+
+/**
+ * Builds a repo whose test suite ONLY passes if its `pretest` build hook
+ * actually ran — `test` reads a file that only `pretest` writes. This is
+ * the mechanism behind the real packdev-demo-nestjs false PASSED, reduced
+ * to its essentials: there, `pretest: "npm run build"` compiled the TS that
+ * `node --test` then loaded, so skipping it meant zero tests ran and npm
+ * still exited 0. Here, skipping it means the test command genuinely fails,
+ * which is what makes these two tests able to tell the difference at all.
+ */
+async function makeBuildDependentRepo(dir: string): Promise<string> {
+  const repoDir = await mkdtemp(path.join(tmpdir(), dir));
+  const pkg = (deps: Record<string, string>) => ({
+    name: "fixture-app",
+    version: "1.0.0",
+    dependencies: deps,
+    scripts: {
+      build: "node -e \"require('fs').writeFileSync('built.marker','ok')\"",
+      pretest: "npm run build",
+      test: "node -e \"if(require('fs').readFileSync('built.marker','utf8')!=='ok')process.exit(1)\"",
+    },
+  });
+  await git(repoDir, ["init", "-q"]);
+  await git(repoDir, ["config", "user.email", "test@test.local"]);
+  await git(repoDir, ["config", "user.name", "test"]);
+  await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.0.0" }), null, 2));
+  await writeFile(path.join(repoDir, ".gitignore"), "built.marker\n");
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "base"]);
+  await git(repoDir, ["branch", "base"]);
+  await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.1.0" }), null, 2));
+  await git(repoDir, ["add", "-A"]);
+  await git(repoDir, ["commit", "-q", "-m", "bump"]);
+  return repoDir;
+}
+
+test(
+  "runGithubPipeline: a bare 'npm test' whose pretest hook builds the app -> the app's own lifecycle hooks still run, producing a real PASSED",
+  { timeout: 60_000 },
+  async () => {
+    const repoDir = await makeBuildDependentRepo("packdev-agents-pretest-hooks-");
+    try {
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        // The natural thing to write, and exactly the config that used to
+        // produce a silent false PASSED against an unbuilt tree.
+        testCommand: "npm test",
+        github,
+        autoMerge: true,
+      });
+
+      // Only reachable if `pretest` actually ran: the test script fails
+      // outright when the build marker is missing. This is the regression
+      // guard for dionmaicon/packdev#6 at the pipeline level.
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "PASSED");
+        assert.equal(result.merged, true);
+      }
+      assert.equal(github.checkRuns[0]!.conclusion, "success");
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "runGithubPipeline: a test suite that runs ZERO tests never reports a clean PASSED, and never auto-merges",
+  { timeout: 60_000 },
+  async () => {
+    // The other half of dionmaicon/packdev#6: an exit-0 harness that tested
+    // nothing must not be mistaken for evidence. packdev 0.4.3+ detects this
+    // dynamically (PASS_WITH_NO_TESTS) rather than by pattern-matching the
+    // command string, and interpret() maps any caveat to PASSED_WEAK.
+    const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-zero-tests-"));
+    const pkg = (deps: Record<string, string>) => ({
+      name: "fixture-app",
+      version: "1.0.0",
+      dependencies: deps,
+      // A real runner, a real exit 0, and genuinely nothing to run.
+      //
+      // The reporter is deliberately NOT pinned. Node emits tap here on
+      // <24 and spec on >=24 ("ℹ tests 0" vs "# tests 0"), which is
+      // exactly the production shape — real users don't pin a reporter
+      // either. This briefly required a `--test-reporter=tap` pin because
+      // packdev's count parser matched only the TAP form, so on Node 24
+      // testCounts came back undefined and this caveat silently never
+      // fired (dionmaicon/packdev#8, found precisely because this test
+      // failed on CI's Node 24 while passing on local Node 22). Fixed in
+      // packdev 0.4.4, so leaving it unpinned now covers BOTH formats
+      // across the CI matrix and guards our own auto-merge gate against
+      // that regression returning — worth the coverage on a safety
+      // property that has already been silently broken once.
+      scripts: { test: "node --test" },
+    });
+    try {
+      await git(repoDir, ["init", "-q"]);
+      await git(repoDir, ["config", "user.email", "test@test.local"]);
+      await git(repoDir, ["config", "user.name", "test"]);
+      await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.0.0" }), null, 2));
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "base"]);
+      await git(repoDir, ["branch", "base"]);
+      await writeFile(path.join(repoDir, "package.json"), JSON.stringify(pkg({ commander: "11.1.0" }), null, 2));
+      await git(repoDir, ["add", "-A"]);
+      await git(repoDir, ["commit", "-q", "-m", "bump"]);
+
+      const github = fakeGitHubOps();
+      const result = await runGithubPipeline({
+        repoDir,
+        baseRef: "base",
+        headRef: "HEAD",
+        actor: "dependabot[bot]",
+        testCommand: "npm test",
+        github,
+        autoMerge: true,
+      });
+
+      assert.equal(result.status, "verdict");
+      if (result.status === "verdict") {
+        assert.equal(result.verdict.kind, "PASSED_WEAK");
+        // The property that actually matters: nothing merges on a run that
+        // tested nothing, even with autoMerge explicitly enabled.
+        assert.equal(result.merged, false);
+      }
+      assert.equal(github.mergeCalls, 0);
+      assert.equal(github.checkRuns[0]!.conclusion, "neutral");
+      assert.match(github.comments[0]!.body, /Zero tests executed/);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  },
+);
