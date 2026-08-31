@@ -138,6 +138,58 @@ test("render: INSTALL_FAILED on yarn/pnpm never renders a Suggested fix — npm'
   assert.doesNotMatch(md, /Suggested fix/);
 });
 
+test("render: a dupes-regression escalation says the test genuinely PASSED, never 'failed the app's real test command'", () => {
+  // Realistic shape: packdev's applyDupesRegressions sets status FAILED
+  // itself whenever dupesRegression is populated (verified against
+  // packdev's own source) — this is never a real test failure, so the
+  // wording used for a genuine failure would be flatly wrong here.
+  const control = version({ version: "1.0.0", status: "PASSED" });
+  const candidate = version({
+    version: "1.1.0",
+    status: "FAILED",
+    dupesRegression: [{ package: "lodash", controlCopies: 1, candidateCopies: 2 }],
+  });
+  const r = report({ versions: [control, candidate], control });
+  const verdict = interpret(r, PACKDEV_EXIT_CODE.COMPAT_FAILED);
+  const md = render(verdict);
+
+  assert.equal(verdict.kind, "INCOMPATIBLE");
+  assert.doesNotMatch(md, /failed the app's real test command/);
+  assert.match(md, /genuinely passed the app's real test command/);
+  assert.match(md, /Suggested next step/);
+  assert.match(md, /npm ls lodash/);
+});
+
+test("render: a real test failure keeps its original wording, unaffected by the dupes-regression branch", () => {
+  const control = version({ version: "1.0.0", status: "PASSED" });
+  const candidate = version({ version: "1.1.0", status: "FAILED", output: "AssertionError: expected true" });
+  const r = report({ versions: [control, candidate], control });
+  const verdict = interpret(r, PACKDEV_EXIT_CODE.COMPAT_FAILED);
+  const md = render(verdict);
+
+  assert.match(md, /failed the app's real test command/);
+  assert.doesNotMatch(md, /genuinely passed/);
+  assert.doesNotMatch(md, /Suggested next step/);
+});
+
+test("render: a mix of one genuine failure and one dupes-escalated version renders BOTH, each with accurate wording", () => {
+  const control = version({ version: "1.0.0", status: "PASSED" });
+  const realFailure = version({ version: "1.1.0", status: "FAILED", output: "AssertionError: boom" });
+  const dupesFailure = version({
+    version: "1.2.0",
+    status: "FAILED",
+    dupesRegression: [{ package: "chalk", controlCopies: 1, candidateCopies: 2 }],
+  });
+  const r = report({ versions: [control, realFailure, dupesFailure], control });
+  const verdict = interpret(r, PACKDEV_EXIT_CODE.COMPAT_FAILED);
+  const md = render(verdict);
+
+  assert.match(md, /`1\.1\.0` failed the app's real test command/);
+  assert.match(md, /`1\.2\.0` genuinely passed the app's real test command/);
+  assert.match(md, /AssertionError: boom/);
+  assert.match(md, /npm ls chalk/);
+});
+
 test("render: NOTHING_TESTED explicitly says it is not a pass", () => {
   const control = version({ version: "1.0.0", status: "PASSED" });
   const candidate = version({ version: "1.1.0", status: "SKIPPED" });

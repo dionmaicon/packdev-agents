@@ -1,7 +1,7 @@
 import { candidatesOf, isAutoMergeEligible, type Verdict } from "./interpret.js";
 import type { ApiDiffReport, CompatVersionResult } from "./packdevTypes.js";
 import type { Bump } from "./extractBump.js";
-import { parsePeerConflicts, renderSuggestedFix } from "./suggestFix.js";
+import { parsePeerConflicts, renderSuggestedFix, renderDupesRegressionFix } from "./suggestFix.js";
 
 const MAX_OUTPUT_CHARS = 4000;
 
@@ -155,11 +155,37 @@ function bodyFor(verdict: Verdict): string {
       );
 
     case "INCOMPATIBLE": {
-      const names = versionsList(verdict.failedVersions);
-      const blocks = verdict.failedVersions
-        .map((v) => outputBlock(`Failure output — ${v.version}`, v.output))
-        .join("");
-      return `${names} failed the app's real test command. **The bump is incompatible with this app.**${blocks}`;
+      // A duplicate-copy regression (packdev's --check-dupes) escalates
+      // status straight to FAILED even when the real test run genuinely
+      // passed (see packdev's applyDupesRegressions) — "failed the app's
+      // real test command" would be flatly wrong for that case, so it's
+      // rendered separately with accurate wording instead of collapsing
+      // both shapes into one sentence.
+      const genuineFailures = verdict.failedVersions.filter((v) => !v.dupesRegression?.length);
+      const dupesEscalated = verdict.failedVersions.filter((v) => v.dupesRegression?.length);
+
+      const parts: string[] = [];
+      if (genuineFailures.length > 0) {
+        const names = versionsList(genuineFailures);
+        const blocks = genuineFailures
+          .map((v) => outputBlock(`Failure output — ${v.version}`, v.output))
+          .join("");
+        parts.push(`${names} failed the app's real test command. **The bump is incompatible with this app.**${blocks}`);
+      }
+      if (dupesEscalated.length > 0) {
+        const names = versionsList(dupesEscalated);
+        parts.push(
+          `${names} genuinely passed the app's real test command, but is marked incompatible because it resolves ` +
+            "more copies of a shared dependency than the version already in use (see the duplicate-copies warning " +
+            "below) — exactly the class of bug a passing test suite can't catch on its own.",
+        );
+        const fix = renderDupesRegressionFix(
+          dupesEscalated.flatMap((v) => v.dupesRegression!),
+          verdict.report.packageManager,
+        );
+        if (fix) parts.push(fix);
+      }
+      return parts.join("\n\n");
     }
 
     case "PASSED_WEAK": {
