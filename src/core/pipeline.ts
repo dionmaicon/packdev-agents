@@ -10,13 +10,12 @@ import {
   type IndependentBumps,
   type Unsupported,
 } from "./extractBump.js";
-import { prepareWorkspace, detectPackageManager, type Workspace } from "./prepareWorkspace.js";
+import { prepareWorkspace, type Workspace } from "./prepareWorkspace.js";
 import { runCompat } from "./runCompat.js";
 import { runApiDiff } from "./runApiDiff.js";
 import { runCombinedTest } from "./runCombinedTest.js";
 import { interpret, isAutoMergeEligible, type Verdict } from "./interpret.js";
 import { render, renderStaticIncompatible } from "./report.js";
-import { planTestCommand } from "./testCommandPlan.js";
 import { renderWithBrain, type Brain } from "./brain.js";
 import type { ApiDiffReport } from "./packdevTypes.js";
 
@@ -119,8 +118,7 @@ export type CombinedResult =
 /** One package.json's outcome within a cross-file bump (see extractBump.ts's CrossFileBump). */
 export type CompatStepResult =
   | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
-  /** `commandNote` is set when the configured test command was rewritten to restore the app's own lifecycle hooks — see testCommandPlan.ts. */
-  | { kind: "verdict"; verdict: Verdict; commandNote?: string | null };
+  | { kind: "verdict"; verdict: Verdict };
 
 export type RunGithubPipelineResult =
   | { status: "skipped-actor"; actor: string }
@@ -244,12 +242,6 @@ async function runCompatStep(
   bump: Bump,
   test: { testCommand?: string | undefined; testScript?: string | undefined },
 ): Promise<CompatStepResult> {
-  // Reconstructs the app's own lifecycle-hook chain explicitly when
-  // --ignore-scripts would otherwise silently suppress it — see
-  // testCommandPlan.ts. Passes through untouched when there are no hooks
-  // to restore, so the common case is unaffected.
-  const plan = await planTestCommand(appDir, test, await detectPackageManager(appDir, "package.json"));
-
   // Static, no install — cheap enough to always run first. Only skips the
   // expensive sandboxed compat run on a CONFIDENT, NEW regression (see
   // isConfidentStaticRegression above) — never on a pre-existing issue the
@@ -276,7 +268,7 @@ async function runCompatStep(
     appDir,
     packageName: bump.name,
     versions: [bump.toVersion],
-    ...(plan.testScript ? { testScript: plan.testScript } : { testCommand: plan.testCommand }),
+    ...(test.testScript ? { testScript: test.testScript } : { testCommand: test.testCommand }),
     extraArgs: [
       // Duplicate-copy regressions (DI singletons, instanceof checks) are a
       // real, distinct failure mode from an incompatible API —
@@ -295,18 +287,13 @@ async function runCompatStep(
       ...(bump.group && bump.group.length > 0 ? ["--group", bump.group.join(",")] : []),
     ],
   });
-  return { kind: "verdict", verdict: interpret(result.report, result.exitCode), commandNote: plan.note };
+  return { kind: "verdict", verdict: interpret(result.report, result.exitCode) };
 }
 
 /** Renders one CompatStepResult's body — shared between the single-bump and cross-file-per-app comment paths. */
 function renderStep(step: CompatStepResult, bump: Bump): string {
   if (step.kind === "static-incompatible") return renderStaticIncompatible(bump, step.apiDiff);
-  return withCommandNote(render(step.verdict), step.commandNote);
-}
-
-/** Appends the test-command rewrite note, when there was one — see TestPlan.note for why this is never suppressed. */
-function withCommandNote(body: string, note: string | null | undefined): string {
-  return note ? `${body}\n\n${note}` : body;
+  return render(step.verdict);
 }
 
 function renderCombined(combined: CombinedResult): string {
@@ -373,20 +360,11 @@ async function runIndependentBumpsStep(
     });
     try {
       const headAppDir = path.join(headWorkspace.dir, path.dirname(bumpResult.packageJsonPath));
-      // Same lifecycle-hook restoration as runCompatStep — runCombinedTest
-      // spawns the app's test command directly with the same sandbox env,
-      // so without this it would silently skip the build here too and could
-      // report the combined state as passing against an unbuilt tree.
-      const plan = await planTestCommand(
-        headAppDir,
-        { testCommand: options.testCommand, testScript: options.testScript },
-        headWorkspace.packageManager,
-      );
       const combinedResult = await runCombinedTest({
         appDir: headAppDir,
         packageManager: headWorkspace.packageManager,
-        testCommand: plan.testCommand,
-        testScript: plan.testScript,
+        testCommand: options.testCommand,
+        testScript: options.testScript,
       });
       combined = combinedResult;
     } finally {
@@ -593,7 +571,7 @@ export async function runGithubPipeline(
   }
 
   const verdict = stepResult.verdict;
-  const body = withCommandNote(await renderWithBrain(verdict, options.brain), stepResult.commandNote);
+  const body = await renderWithBrain(verdict, options.brain);
   const commentBody = `${COMMENT_MARKER}\n${body}`;
 
   await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
@@ -601,7 +579,7 @@ export async function runGithubPipeline(
     name: "packdev compat",
     conclusion: checkConclusionFor(verdict),
     title: checkTitleFor(verdict, bump),
-    summary: withCommandNote(render(verdict), stepResult.commandNote),
+    summary: render(verdict),
   });
 
   let merged = false;

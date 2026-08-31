@@ -3,9 +3,28 @@ import assert from "node:assert/strict";
 
 import { buildSandboxEnv } from "../../src/core/childEnv.ts";
 
-test("buildSandboxEnv: always sets npm_config_ignore_scripts=true", () => {
+test("buildSandboxEnv: does NOT set npm_config_ignore_scripts by default", () => {
+  // Regression guard for a real silent false PASSED (dionmaicon/packdev#6):
+  // as a blanket default this also suppressed the APP's own pretest/prebuild
+  // hooks during the test phase, so a NestJS app's tests never got compiled,
+  // `node --test` found zero files, npm exited 0, and a genuinely broken
+  // bump was reported as a clean pass. It must be a deliberate per-call-site
+  // choice, never inherited silently.
   const env = buildSandboxEnv({});
+  assert.equal(env["npm_config_ignore_scripts"], undefined);
+});
+
+test("buildSandboxEnv: sets npm_config_ignore_scripts=true when explicitly opted in", () => {
+  const env = buildSandboxEnv({}, { ignoreScripts: true });
   assert.equal(env["npm_config_ignore_scripts"], "true");
+});
+
+test("buildSandboxEnv: secret scrubbing is unconditional, independent of the ignoreScripts choice", () => {
+  for (const options of [{}, { ignoreScripts: true }, { ignoreScripts: false }]) {
+    const env = buildSandboxEnv({ GITHUB_TOKEN: "ghp_secret", PATH: "/usr/bin" }, options);
+    assert.equal(env["GITHUB_TOKEN"], undefined);
+    assert.equal(env["PATH"], "/usr/bin");
+  }
 });
 
 test("buildSandboxEnv: strips secret-shaped keys (GITHUB_TOKEN, *_API_KEY, INPUT_*)", () => {
@@ -29,6 +48,18 @@ test("buildSandboxEnv: keeps registry auth tokens installs may legitimately need
   const env = buildSandboxEnv({ NPM_TOKEN: "npm-token", NODE_AUTH_TOKEN: "node-token" });
   assert.equal(env["NPM_TOKEN"], "npm-token");
   assert.equal(env["NODE_AUTH_TOKEN"], "node-token");
+});
+
+test("buildSandboxEnv: strips NODE_TEST_CONTEXT so a nested test runner keeps its normal reporter", () => {
+  // Real bug this guards: inherited by the sandboxed app's own `node
+  // --test`, this switches that run from TAP to the v8-serialized
+  // reporter, so packdev can't scrape the test counts and the
+  // PASS_WITH_NO_TESTS caveat silently never fires — a zero-test run got
+  // reported as a clean auto-mergeable PASSED, but only when the parent
+  // happened to be running under node:test.
+  const env = buildSandboxEnv({ NODE_TEST_CONTEXT: "child-v8", NODE_ENV: "test" });
+  assert.equal(env["NODE_TEST_CONTEXT"], undefined);
+  assert.equal(env["NODE_ENV"], "test");
 });
 
 test("buildSandboxEnv: keeps ordinary non-secret-shaped vars untouched", () => {

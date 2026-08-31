@@ -106,6 +106,11 @@ export async function runCombinedTest(
 
     const child = spawn(command!, args, {
       cwd: options.appDir,
+      // Deliberately WITHOUT ignoreScripts: this spawns the app's own test
+      // command, whose pretest/prebuild hooks are trusted repo code that
+      // must run for the result to mean anything (see childEnv.ts). The
+      // workspace was already installed by prepareWorkspace with scripts
+      // blocked, so no dependency install script can execute from here.
       env: buildSandboxEnv(),
       // Windows has no process-group-kill equivalent via a negative pid
       // — detached there just runs the child without a console window,
