@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parsePeerConflicts, renderSuggestedFix } from "../../src/core/suggestFix.ts";
+import { parsePeerConflicts, renderSuggestedFix, renderDupesRegressionFix } from "../../src/core/suggestFix.ts";
+import type { DupesRegressionEntry } from "../../src/core/packdevTypes.ts";
 
 // Real npm ERESOLVE output, captured verbatim from a genuine
 // packdev-demo-nestjs Dependabot PR (dionmaicon/packdev-demo-nestjs#31,
@@ -83,4 +84,49 @@ npm error peer typescript@">=5.0.0" from eslint-plugin-n@18.3.0
   const rendered = renderSuggestedFix("eslint-plugin-n", "18.3.0", conflicts);
   assert.ok(rendered);
   assert.match(rendered!, /npm install eslint-plugin-n@18\.3\.0 eslint@">=8\.57\.1" typescript@">=5\.0\.0"/);
+});
+
+test("renderDupesRegressionFix: no regressions -> null, no empty section rendered", () => {
+  assert.equal(renderDupesRegressionFix([], "npm"), null);
+});
+
+test("renderDupesRegressionFix: never fabricates an exact fix command — the report only has counts, never versions", () => {
+  const regressions: DupesRegressionEntry[] = [
+    { package: "lodash", controlCopies: 1, candidateCopies: 2 },
+  ];
+  const rendered = renderDupesRegressionFix(regressions, "npm");
+  assert.ok(rendered);
+  // The one thing this must NEVER contain: a fabricated "npm install lodash@X" —
+  // there is no version data in a DupesRegressionEntry to derive one from.
+  assert.doesNotMatch(rendered!, /npm install lodash@/);
+  assert.match(rendered!, /npm ls lodash/);
+  assert.match(rendered!, /overrides/);
+});
+
+test("renderDupesRegressionFix: uses the correct package manager's inspect command and overrides field name", () => {
+  const regressions: DupesRegressionEntry[] = [{ package: "lodash", controlCopies: 1, candidateCopies: 2 }];
+
+  const npm = renderDupesRegressionFix(regressions, "npm")!;
+  assert.match(npm, /npm ls lodash/);
+  assert.match(npm, /`overrides`/);
+
+  const yarn = renderDupesRegressionFix(regressions, "yarn")!;
+  assert.match(yarn, /yarn why lodash/);
+  assert.match(yarn, /`resolutions`/);
+
+  const pnpm = renderDupesRegressionFix(regressions, "pnpm")!;
+  assert.match(pnpm, /pnpm why lodash/);
+  assert.match(pnpm, /`pnpm\.overrides`/);
+});
+
+test("renderDupesRegressionFix: multiple regressed packages each get their own inspect command, deduplicated", () => {
+  const regressions: DupesRegressionEntry[] = [
+    { package: "lodash", controlCopies: 1, candidateCopies: 2 },
+    { package: "lodash", controlCopies: 1, candidateCopies: 2 },
+    { package: "chalk", controlCopies: 1, candidateCopies: 3 },
+  ];
+  const rendered = renderDupesRegressionFix(regressions, "npm")!;
+  assert.match(rendered, /npm ls lodash/);
+  assert.match(rendered, /npm ls chalk/);
+  assert.equal(rendered.match(/npm ls lodash/g)?.length, 1);
 });
