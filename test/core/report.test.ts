@@ -102,6 +102,42 @@ test("render: INSTALL_FAILED names the failed version and includes its output, n
   assert.match(md, /npm ERR! 404 Not Found/);
 });
 
+test("render: INSTALL_FAILED with a real npm ERESOLVE peer conflict includes a copy-paste Suggested fix", () => {
+  const control = version({ version: "11.0.21" });
+  const candidate = version({
+    version: "12.0.1",
+    status: "INSTALL_FAILED",
+    output: [
+      "npm error code ERESOLVE",
+      "npm error Found: @nestjs/common@11.0.21",
+      "npm error Could not resolve dependency:",
+      'npm error peer @nestjs/common@"^12.0.0" from @nestjs/core@12.0.1',
+    ].join("\n"),
+  });
+  const r = report({ package: "@nestjs/core", versions: [control, candidate], control, packageManager: "npm" });
+  const verdict = interpret(r, PACKDEV_EXIT_CODE.COMPAT_FAILED);
+  const md = render(verdict);
+
+  assert.match(md, /Suggested fix/);
+  assert.match(md, /npm install @nestjs\/core@12\.0\.1 @nestjs\/common@"\^12\.0\.0"/);
+  assert.match(md, /currently `11\.0\.21`/);
+});
+
+test("render: INSTALL_FAILED on yarn/pnpm never renders a Suggested fix — npm's ERESOLVE shape doesn't apply", () => {
+  const control = version({ version: "11.0.21" });
+  const candidate = version({
+    version: "12.0.1",
+    status: "INSTALL_FAILED",
+    // Same text shape as the npm case — the point is packageManager alone gates rendering.
+    output: 'npm error peer @nestjs/common@"^12.0.0" from @nestjs/core@12.0.1',
+  });
+  const r = report({ package: "@nestjs/core", versions: [control, candidate], control, packageManager: "yarn" });
+  const verdict = interpret(r, PACKDEV_EXIT_CODE.COMPAT_FAILED);
+  const md = render(verdict);
+
+  assert.doesNotMatch(md, /Suggested fix/);
+});
+
 test("render: NOTHING_TESTED explicitly says it is not a pass", () => {
   const control = version({ version: "1.0.0", status: "PASSED" });
   const candidate = version({ version: "1.1.0", status: "SKIPPED" });
