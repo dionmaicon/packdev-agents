@@ -1,6 +1,7 @@
 import { candidatesOf, isAutoMergeEligible, type Verdict } from "./interpret.js";
 import type { ApiDiffReport, CompatVersionResult } from "./packdevTypes.js";
 import type { Bump } from "./extractBump.js";
+import { parsePeerConflicts, renderSuggestedFix } from "./suggestFix.js";
 
 const MAX_OUTPUT_CHARS = 4000;
 
@@ -124,12 +125,26 @@ function bodyFor(verdict: Verdict): string {
       const blocks = verdict.failedVersions
         .map((v) => outputBlock(`Install output — ${v.version}`, v.output))
         .join("");
+      // npm-only: ERESOLVE's exact text shape is npm-specific, and a
+      // wrong suggested command on yarn/pnpm would be worse than none.
+      const suggestions =
+        verdict.report.packageManager === "npm"
+          ? verdict.failedVersions
+              .map((v) =>
+                v.output
+                  ? renderSuggestedFix(verdict.report.package, v.version, parsePeerConflicts(v.output))
+                  : null,
+              )
+              .filter((s): s is string => s !== null)
+              .join("\n\n")
+          : "";
       return (
         `The sandboxed install itself failed for ${names}, before any test ran. This is a ` +
         "registry, auth, or package-manager problem — **not evidence the candidate version is " +
         "incompatible.** Check registry reachability/auth and that the resolved package manager " +
         "is available." +
-        blocks
+        blocks +
+        (suggestions ? `\n\n${suggestions}` : "")
       );
     }
 
