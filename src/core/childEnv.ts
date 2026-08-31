@@ -54,6 +54,25 @@ const SECRET_PATTERN = /token|api[_-]?key|secret|password/i;
  */
 const RUNNER_STATE_DENYLIST = new Set(["NODE_TEST_CONTEXT"]);
 
+/**
+ * An INHERITED ignore-scripts setting, which must never survive into a
+ * child regardless of what this function's own caller asked for.
+ *
+ * npm materializes all of its config as `npm_config_*` env vars for any
+ * script it runs, so `ignore-scripts=true` in a repo's, a user's, or a CI
+ * runner's .npmrc — standard supply-chain hardening advice — arrives here
+ * as `npm_config_ignore_scripts=true` (confirmed empirically for both the
+ * .npmrc and ambient-env cases). Copied through, it would suppress the
+ * app's own pretest/prebuild hooks in exactly the call sites that opted
+ * OUT of that, silently restoring the false-PASSED bug on any such host.
+ * Dropping the inherited key first makes the value below authoritative,
+ * so the behavior depends only on the explicit per-call-site choice and
+ * never on ambient config. Matched case-insensitively, and across both
+ * separator spellings, because npm's own key normalization is not
+ * something to bet correctness on.
+ */
+const INHERITED_IGNORE_SCRIPTS = /^npm_config_ignore[-_]scripts$/i;
+
 export interface SandboxEnvOptions {
   /**
    * Sets npm_config_ignore_scripts. Only correct for a child that performs
@@ -72,6 +91,7 @@ export function buildSandboxEnv(
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (RUNNER_STATE_DENYLIST.has(key)) continue;
+    if (INHERITED_IGNORE_SCRIPTS.test(key)) continue;
     if (!SECRET_ALLOWLIST.has(key) && SECRET_PATTERN.test(key)) continue;
     env[key] = value;
   }

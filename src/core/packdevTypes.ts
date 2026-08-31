@@ -25,13 +25,22 @@ export interface ConsumerTestResult {
  * Best-effort counts scraped from the test runner's own summary output
  * (packdev 0.4.3+). `undefined` — never a false zero — when no known
  * runner format could be parsed, so a missing count is unambiguously
- * "couldn't tell" rather than "nothing ran".
+ * "couldn't tell" rather than "nothing ran". packdev's own doc comment is
+ * explicit that a consumer gating auto-merge on `testsRun > 0` must treat
+ * `undefined` as unknown and fall back to its own policy.
  */
 export interface TestCounts {
   testsRun: number;
-  testsFailed: number;
-  /** Which runner's output format was matched, e.g. "node-test", "jest", "vitest", "mocha". */
-  source: string;
+  /**
+   * `null` when the total was parsed but the failure count wasn't — some
+   * recognized runners report only a total, and packdev deliberately keeps
+   * this null rather than defaulting to 0, which would look more complete
+   * than the input justifies. Consumers must null-check before any
+   * arithmetic or comparison.
+   */
+  testsFailed: number | null;
+  /** Closed union in packdev's own contract; "mixed" when a fan-out run matched more than one runner format. */
+  source: "node-test" | "jest" | "vitest" | "mocha" | "mixed";
 }
 
 export interface CompatVersionResult {

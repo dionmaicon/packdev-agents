@@ -50,6 +50,31 @@ test("buildSandboxEnv: keeps registry auth tokens installs may legitimately need
   assert.equal(env["NODE_AUTH_TOKEN"], "node-token");
 });
 
+test("buildSandboxEnv: an INHERITED npm_config_ignore_scripts never leaks through when not opted in", () => {
+  // `ignore-scripts=true` in a repo/user/CI .npmrc is standard supply-chain
+  // hardening, and npm materializes its whole config as npm_config_* env
+  // vars for any script it runs — so this arrives here set. Copied through,
+  // it would suppress the app's own pretest hooks at exactly the call sites
+  // that opted OUT, silently restoring the false-PASSED bug on such a host.
+  const env = buildSandboxEnv({ npm_config_ignore_scripts: "true", PATH: "/usr/bin" });
+  assert.equal(env["npm_config_ignore_scripts"], undefined);
+  assert.equal(env["PATH"], "/usr/bin");
+});
+
+test("buildSandboxEnv: inherited ignore-scripts is dropped regardless of case or separator spelling", () => {
+  const env = buildSandboxEnv({
+    NPM_CONFIG_IGNORE_SCRIPTS: "true",
+    "npm_config_ignore-scripts": "true",
+  });
+  assert.equal(env["NPM_CONFIG_IGNORE_SCRIPTS"], undefined);
+  assert.equal(env["npm_config_ignore-scripts"], undefined);
+});
+
+test("buildSandboxEnv: opting in wins over an inherited FALSE value, and sets the canonical key only", () => {
+  const env = buildSandboxEnv({ npm_config_ignore_scripts: "false" }, { ignoreScripts: true });
+  assert.equal(env["npm_config_ignore_scripts"], "true");
+});
+
 test("buildSandboxEnv: strips NODE_TEST_CONTEXT so a nested test runner keeps its normal reporter", () => {
   // Real bug this guards: inherited by the sandboxed app's own `node
   // --test`, this switches that run from TAP to the v8-serialized

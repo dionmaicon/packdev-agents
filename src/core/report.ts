@@ -64,7 +64,14 @@ function alwaysSurfacedWarnings(verdict: Verdict): string[] {
     // already raises PASS_WITH_NO_TESTS for it above, which downgrades the
     // verdict to PASSED_WEAK — this surfaces the underlying count so a
     // reviewer can see the evidence, not just the conclusion.
-    if (version.testCounts?.testsRun === 0) {
+    //
+    // Gated on PASSED, matching packdev's own display and its
+    // detectDynamicNoTestsCaveat (both check status === "PASSED"): a
+    // FAILED version can also report testsRun 0 — a runner that treats an
+    // empty suite as an error, or a build step that died before any test
+    // ran — and saying that outcome "confirms nothing" would discard real
+    // incompatibility evidence for a candidate-only failure.
+    if (version.status === "PASSED" && version.testCounts?.testsRun === 0) {
       warnings.push(
         `⚠️ **Zero tests executed** on \`${version.version}\` — the harness exited without running anything ` +
           `(runner: \`${version.testCounts.source}\`), so this result confirms nothing about the bump.`,
