@@ -1177,17 +1177,19 @@ test(
       dependencies: deps,
       // A real runner, a real exit 0, and genuinely nothing to run.
       //
-      // --test-reporter=tap is pinned deliberately. Node 24 changed the
-      // default non-TTY reporter from tap to spec ("ℹ tests 0" instead of
-      // "# tests 0"), and packdev's count parser only matches the TAP form
-      // — so on Node 24 testCounts comes back undefined and the caveat
-      // never fires (real gap, reported upstream as dionmaicon/packdev#8;
-      // this test failed on CI's Node 24 while passing on local Node 22,
-      // which is how it was found). Pinning it here keeps this test about
-      // what it actually covers — that the PIPELINE refuses to auto-merge
-      // a zero-test run — instead of silently doubling as a probe of
-      // packdev's reporter-format coverage, which belongs upstream.
-      scripts: { test: "node --test --test-reporter=tap" },
+      // The reporter is deliberately NOT pinned. Node emits tap here on
+      // <24 and spec on >=24 ("ℹ tests 0" vs "# tests 0"), which is
+      // exactly the production shape — real users don't pin a reporter
+      // either. This briefly required a `--test-reporter=tap` pin because
+      // packdev's count parser matched only the TAP form, so on Node 24
+      // testCounts came back undefined and this caveat silently never
+      // fired (dionmaicon/packdev#8, found precisely because this test
+      // failed on CI's Node 24 while passing on local Node 22). Fixed in
+      // packdev 0.4.4, so leaving it unpinned now covers BOTH formats
+      // across the CI matrix and guards our own auto-merge gate against
+      // that regression returning — worth the coverage on a safety
+      // property that has already been silently broken once.
+      scripts: { test: "node --test" },
     });
     try {
       await git(repoDir, ["init", "-q"]);

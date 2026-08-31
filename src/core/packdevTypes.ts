@@ -1,6 +1,6 @@
 /**
  * Report shapes mirrored from packdev's own TS source (src/compat.ts,
- * src/index.ts), pinned against packdev 0.4.3. packdev ships no versioned
+ * src/index.ts), pinned against packdev 0.4.4. packdev ships no versioned
  * JSON schema — these interfaces ARE the contract. Re-verify against
  * packdev's source on any packdev bump. See docs/architecture.md.
  */

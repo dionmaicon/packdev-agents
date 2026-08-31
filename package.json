@@ -17,7 +17,7 @@
     "@actions/core": "^3.0.1",
     "@actions/github": "^9.1.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "packdev": "0.4.3",
+    "packdev": "0.4.4",
     "semver": "^7.8.5"
   },
   "devDependencies": {
