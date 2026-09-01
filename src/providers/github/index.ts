@@ -11,11 +11,12 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 function parseRepo(env: NodeJS.ProcessEnv): { owner: string; repo: string } {
-  const [owner, repo] = requireEnv(env, "REPO").split("/");
-  if (!owner || !repo) {
-    throw new Error(`REPO must be "owner/repo", got "${env["REPO"]}"`);
+  const value = requireEnv(env, "REPO");
+  const parts = value.split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`REPO must be "owner/repo", got "${value}"`);
   }
-  return { owner, repo };
+  return { owner: parts[0], repo: parts[1] };
 }
 
 /** Built-in "github" provider — see registry.ts for how PROVIDER selects this. */
@@ -30,10 +31,12 @@ export const createGithubProvider: ProviderFactory = (env): Provider => {
       createOctokitOps({ octokit, owner, repo, prNumber: pr.number, headSha: pr.headSha }),
     createGitRemote: () => ({
       url: `https://github.com/${owner}/${repo}.git`,
-      // Same Basic-auth shape git itself generates for a `https://TOKEN@host/...`
-      // URL — just applied per-request instead of persisted to disk. See
-      // GitRemote's doc comment in providers/types.ts.
-      authHeader: `Authorization: Basic ${Buffer.from(`${token}:`).toString("base64")}`,
+      // GitHub's HTTPS git auth expects the token in the *password* slot;
+      // `x-access-token` is GitHub's documented fixed username for this
+      // (same shape GitHub Actions itself uses for `https://x-access-token:TOKEN@host/...`).
+      // Applied per-request instead of persisted to disk — see GitRemote's
+      // doc comment in providers/types.ts.
+      authHeader: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
     }),
   };
 };

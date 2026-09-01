@@ -114,3 +114,54 @@ test("unset (loop mode): POLL_INTERVAL_SECONDS=notanumber is rejected before sta
   assert.equal(exitCode, 1);
   assert.match(stderr, /POLL_INTERVAL_SECONDS must be a positive number/);
 });
+
+test("compat --once: REPO with extra path segments is rejected, not silently truncated", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPO: "owner/repo/extra",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /REPO must be "owner\/repo"/);
+});
+
+test("compat --once: TEST_COMBINED_BUMP=ture (typo) is rejected instead of silently treated as false", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    TEST_COMMAND: "true",
+    TEST_COMBINED_BUMP: "ture",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /TEST_COMBINED_BUMP must be "true" or "false"/);
+});
+
+test("triage --once: MAX_TURNS=notanumber is rejected before any network call", async () => {
+  const { stderr, exitCode } = await runCli(["triage", "--once"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    MAX_TURNS: "notanumber",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /MAX_TURNS must be a positive integer/);
+});
+
+test("triage --once: MAX_TURNS=0 is rejected", async () => {
+  const { stderr, exitCode } = await runCli(["triage", "--once"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    MAX_TURNS: "0",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /MAX_TURNS must be a positive integer/);
+});
+
+test("compat --once: PROVIDER=gitea missing GITEA_USERNAME -> fails with a clear message", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPO: "owner/repo",
+    PROVIDER: "gitea",
+    GITEA_URL: "https://gitea.example.com",
+    GITEA_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Missing required environment variable: GITEA_USERNAME/);
+});

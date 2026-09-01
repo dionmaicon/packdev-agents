@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pathToFileURL } from "node:url";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../core/brain.js";
 import type { CompatStepResult } from "../core/pipeline.js";
 import { resolveProvider } from "../providers/registry.js";
@@ -112,13 +113,29 @@ function readTestConfig(): { testCommand: string | undefined; testScript: string
  * the credential-safe-by-default behavior in CR8 is achieved: the provider
  * always returns a clean URL + a per-request authHeader (see
  * providers/types.ts's GitRemote), never a token baked into the URL
- * itself. An explicit REMOTE_URL override still gets the same authHeader
- * applied — harmless for a non-HTTP(S) remote (e.g. SSH), since git simply
- * ignores http.extraHeader for those transports.
+ * itself. The authHeader is only forwarded when REMOTE_URL is unset or
+ * points at the same origin as the provider's own URL — otherwise a
+ * REMOTE_URL pointed at a different host would leak the forge token to
+ * that host on every clone/fetch.
  */
-function resolveGitRemote(provider: { createGitRemote(): { url: string; authHeader?: string | undefined } } ): { remoteUrl: string; authHeader: string | undefined } {
+export function resolveGitRemote(provider: { createGitRemote(): { url: string; authHeader?: string | undefined } } ): { remoteUrl: string; authHeader: string | undefined } {
   const remote = provider.createGitRemote();
-  return { remoteUrl: env("REMOTE_URL") ?? remote.url, authHeader: remote.authHeader };
+  const override = env("REMOTE_URL");
+  if (!override) {
+    return { remoteUrl: remote.url, authHeader: remote.authHeader };
+  }
+  const sameOrigin = sameHttpOrigin(override, remote.url);
+  return { remoteUrl: override, authHeader: sameOrigin ? remote.authHeader : undefined };
+}
+
+export function sameHttpOrigin(a: string, b: string): boolean {
+  try {
+    const urlA = new URL(a);
+    const urlB = new URL(b);
+    return urlA.protocol === urlB.protocol && urlA.host === urlB.host;
+  } catch {
+    return false;
+  }
 }
 
 async function runCompatOnce(): Promise<PollResult> {
@@ -129,6 +146,9 @@ async function runCompatOnce(): Promise<PollResult> {
   const statePath = env("STATE_PATH") ?? "./.packdev-agents/state.json";
   const autoMerge = env("AUTO_MERGE") === "true";
   const testCombinedBumpInput = env("TEST_COMBINED_BUMP");
+  if (testCombinedBumpInput !== undefined && testCombinedBumpInput !== "true" && testCombinedBumpInput !== "false") {
+    throw new Error(`TEST_COMBINED_BUMP must be "true" or "false", got "${testCombinedBumpInput}"`);
+  }
   const testCombinedBump = testCombinedBumpInput !== undefined ? testCombinedBumpInput === "true" : undefined;
 
   const result = await pollOnce({
@@ -182,13 +202,23 @@ async function runCompatOnce(): Promise<PollResult> {
   return result;
 }
 
+function readMaxTurns(): number | undefined {
+  const input = env("MAX_TURNS");
+  if (input === undefined) return undefined;
+  const value = Number(input);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`MAX_TURNS must be a positive integer, got "${input}"`);
+  }
+  return value;
+}
+
 async function runTriageOnce(): Promise<TriagePollResult> {
   const provider = await resolveProvider(process.env);
   const common = readCommonEnv();
   const { remoteUrl, authHeader } = resolveGitRemote(provider);
   // Separate state file from compat's own — see poll.ts's TriagePollOptions doc comment.
   const statePath = env("TRIAGE_STATE_PATH") ?? "./.packdev-agents/triage-state.json";
-  const maxTurnsInput = env("MAX_TURNS");
+  const maxTurns = readMaxTurns();
 
   const result = await pollTriageOnce({
     cloneDir: common.cloneDir,
@@ -199,7 +229,7 @@ async function runTriageOnce(): Promise<TriagePollResult> {
     forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
     agentLoop: buildAgentLoop(),
     allowedActors: common.allowedActors,
-    ...(maxTurnsInput ? { maxTurns: Number(maxTurnsInput) } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {}),
     ...(common.packageJsonPath ? { packageJsonPath: common.packageJsonPath } : {}),
   });
 
@@ -238,7 +268,7 @@ Env vars (both subcommands):
   PROVIDER_MODULE   path (relative to cwd) or package specifier for a custom
                     provider module (overrides PROVIDER) — see docs/self-hosted.md
   GITHUB_TOKEN      required when PROVIDER=github
-  GITEA_URL, GITEA_TOKEN   required when PROVIDER=gitea
+  GITEA_URL, GITEA_TOKEN, GITEA_USERNAME   required when PROVIDER=gitea
   ALLOWED_ACTORS, PACKAGE_JSON_PATH, CLONE_DIR, POLL_INTERVAL_SECONDS   optional
                     (POLL_INTERVAL_SECONDS must be a positive number; only used without --once)
 
@@ -287,7 +317,12 @@ async function main(): Promise<void> {
   await loop.start();
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only auto-run when executed directly (`node dist/cli/index.js ...`), not
+// when imported — lets tests import pure helpers above (resolveGitRemote,
+// sameHttpOrigin) without triggering a real CLI run as an import side effect.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

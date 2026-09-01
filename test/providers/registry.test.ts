@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -60,6 +60,33 @@ test("resolveProvider: PROVIDER_MODULE wins over PROVIDER when both are set", as
 
     const provider = await resolveProvider({ PROVIDER: "gitea", PROVIDER_MODULE: "./custom.mjs" });
     assert.equal(provider.createGitRemote().url, "https://example.test/wins.git");
+  } finally {
+    process.chdir(originalCwd);
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveProvider: PROVIDER_MODULE with a BARE package specifier resolves from the caller's own node_modules, not this file's own location", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
+  const originalCwd = process.cwd();
+  try {
+    const pkgDir = path.join(projectDir, "node_modules", "my-custom-provider-pkg");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(path.join(pkgDir, "package.json"), JSON.stringify({ name: "my-custom-provider-pkg", type: "module", main: "index.mjs" }));
+    await writeFile(
+      path.join(pkgDir, "index.mjs"),
+      `export default function createProvider() {
+        return {
+          createPullRequestSource: () => ({ listOpenBotPRs: async () => [] }),
+          createForgeOpsFor: () => ({ upsertComment: async () => {}, createCheckRun: async () => {}, mergePullRequest: async () => {} }),
+          createGitRemote: () => ({ url: "https://example.test/bare-specifier.git" }),
+        };
+      }\n`,
+    );
+    process.chdir(projectDir);
+
+    const provider = await resolveProvider({ PROVIDER_MODULE: "my-custom-provider-pkg" });
+    assert.equal(provider.createGitRemote().url, "https://example.test/bare-specifier.git");
   } finally {
     process.chdir(originalCwd);
     await rm(projectDir, { recursive: true, force: true });

@@ -39,8 +39,23 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  publish-npm:
+  verify-version:
     needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Tag v$tag_version does not match package.json version $pkg_version" >&2
+            exit 1
+          fi
+
+  publish-npm:
+    needs: verify-version
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -56,7 +71,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-docker:
-    needs: test
+    needs: verify-version
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

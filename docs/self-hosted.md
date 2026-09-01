@@ -20,11 +20,18 @@ packdev-agents compat --once
 ```sh
 docker build -t packdev-agents .
 docker run --rm \
+  -v "$(pwd)/.packdev-agents:/app/.packdev-agents" \
   -e REPO=owner/repo \
   -e PROVIDER=github -e GITHUB_TOKEN=ghp_... \
   -e TEST_COMMAND="npm test" \
   packdev-agents compat --once
 ```
+
+The volume mount is required even with `--once`: it's where the clone
+(`CLONE_DIR`, default `./.packdev-agents/repo`) and the seen-PR state
+(`STATE_PATH`/`TRIAGE_STATE_PATH`) live. Without it, a `--rm` container
+loses both on exit and every cron-triggered run reprocesses every open PR
+from scratch instead of skipping ones already handled at the current head.
 
 ## Commands
 
@@ -48,7 +55,7 @@ Both subcommands:
 | `PROVIDER` | no | `github` (default) or `gitea` |
 | `PROVIDER_MODULE` | no | path or package specifier for a custom provider — see below. Overrides `PROVIDER` when set. |
 | `GITHUB_TOKEN` | if `PROVIDER=github` | needs `repo` scope (comment, check-run, merge) |
-| `GITEA_URL`, `GITEA_TOKEN` | if `PROVIDER=gitea` | token needs `read:repository`, `write:repository`, `read:issue`, `write:issue` scopes |
+| `GITEA_URL`, `GITEA_TOKEN`, `GITEA_USERNAME` | if `PROVIDER=gitea` | token needs `read:repository`, `write:repository`, `read:issue`, `write:issue` scopes; `GITEA_USERNAME` must be the token owner's username — Gitea's git-http-backend needs a real username alongside the token as password, a bare token with no username is rejected for private repos |
 | `REMOTE_URL` | no | overrides the git clone URL the provider derives by default. Credentials are never embedded in this URL either way — see "Credentials" below. |
 | `ALLOWED_ACTORS` | no | comma-separated PR author allowlist, default `dependabot[bot],renovate[bot]` |
 | `PACKAGE_JSON_PATH` | no | pin to one `package.json` in a monorepo instead of auto-discovering |

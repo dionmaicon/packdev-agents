@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import type { Provider, ProviderFactory } from "./types.js";
@@ -18,13 +19,27 @@ const BUILTIN_PROVIDERS: Record<string, ProviderFactory> = {
  * relative to dist/providers/registry.js instead, which silently breaks
  * the documented local-file escape hatch for every installed copy of this
  * package. A bare/package specifier (no leading "." or "/", e.g.
- * "@my-org/my-provider") is left untouched so Node's normal node_modules
- * resolution handles it.
+ * "@my-org/my-provider") needs the same treatment: plain `import()` would
+ * resolve it from node_modules next to dist/providers/registry.js, not
+ * the caller's own node_modules, so a globally-installed or npx'd CLI
+ * could never load a provider a project installed locally. Route it
+ * through require.resolve() rooted at the caller's cwd instead, then
+ * import the resolved absolute path.
  */
 function resolveModuleSpecifier(specifier: string): string {
   const isFilesystemPath = specifier.startsWith("./") || specifier.startsWith("../") || path.isAbsolute(specifier);
-  if (!isFilesystemPath) return specifier;
-  return pathToFileURL(path.resolve(process.cwd(), specifier)).href;
+  if (isFilesystemPath) {
+    return pathToFileURL(path.resolve(process.cwd(), specifier)).href;
+  }
+  const cwdRequire = createRequire(path.join(process.cwd(), "package.json"));
+  try {
+    return pathToFileURL(cwdRequire.resolve(specifier)).href;
+  } catch {
+    // Not resolvable from the caller's cwd (e.g. running from within this
+    // package's own source tree) — fall back to normal specifier
+    // resolution rooted at this module's own location.
+    return specifier;
+  }
 }
 
 /**

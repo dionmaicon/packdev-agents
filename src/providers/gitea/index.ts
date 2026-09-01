@@ -9,11 +9,12 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 function parseRepo(env: NodeJS.ProcessEnv): { owner: string; repo: string } {
-  const [owner, repo] = requireEnv(env, "REPO").split("/");
-  if (!owner || !repo) {
-    throw new Error(`REPO must be "owner/repo", got "${env["REPO"]}"`);
+  const value = requireEnv(env, "REPO");
+  const parts = value.split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`REPO must be "owner/repo", got "${value}"`);
   }
-  return { owner, repo };
+  return { owner: parts[0], repo: parts[1] };
 }
 
 /** Built-in "gitea" provider — see registry.ts for how PROVIDER selects this. */
@@ -21,17 +22,20 @@ export const createGiteaProvider: ProviderFactory = (env): Provider => {
   const { owner, repo } = parseRepo(env);
   const baseUrl = requireEnv(env, "GITEA_URL");
   const token = requireEnv(env, "GITEA_TOKEN");
+  const username = requireEnv(env, "GITEA_USERNAME");
 
   return {
     createPullRequestSource: () => createGiteaPullRequestSource({ baseUrl, token, owner, repo }),
     createForgeOpsFor: (pr) => createGiteaOps({ baseUrl, token, owner, repo, prNumber: pr.number }),
     createGitRemote: () => ({
       url: `${baseUrl}/${owner}/${repo}.git`,
-      // Gitea's git-http-backend accepts a personal access token as the
-      // Basic-auth password (any username) — same scheme as github/index.ts,
-      // see GitRemote's doc comment in providers/types.ts for why this is a
-      // per-request header, not embedded in `url`.
-      authHeader: `Authorization: Basic ${Buffer.from(`${token}:`).toString("base64")}`,
+      // Gitea's git-http-backend authenticates like standard HTTP Basic
+      // auth: the token owner's real username plus the PAT as the
+      // password — a bare token with an empty password is rejected for
+      // private repos, so GITEA_USERNAME (the token owner) is required.
+      // Applied per-request instead of persisted to disk — see GitRemote's
+      // doc comment in providers/types.ts.
+      authHeader: `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`,
     }),
   };
 };
