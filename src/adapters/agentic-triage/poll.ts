@@ -8,6 +8,8 @@ import { DEFAULT_ALLOWED_ACTORS, type ForgeOps } from "../../core/pipeline.js";
 export interface TriagePollOptions {
   cloneDir: string;
   remoteUrl: string;
+  /** "Authorization: ..." applied per git invocation, never persisted to .git/config — see repoSync.ts's authArgs and providers/types.ts's GitRemote. */
+  authHeader?: string | undefined;
   /** Separate state file from the compat pipeline's — a PR can be at the same head SHA for both, but each pipeline tracks its own "have I posted my comment for this head yet" independently. */
   statePath: string;
   prSource: PullRequestSource;
@@ -43,7 +45,7 @@ export interface TriagePollResult {
  * already know a PR number.
  */
 export async function pollTriageOnce(options: TriagePollOptions): Promise<TriagePollResult> {
-  await ensureLocalClone({ cloneDir: options.cloneDir, remoteUrl: options.remoteUrl });
+  await ensureLocalClone({ cloneDir: options.cloneDir, remoteUrl: options.remoteUrl, authHeader: options.authHeader });
 
   const state = await loadSeenState(options.statePath);
   const allPRs = await options.prSource.listOpenBotPRs();
@@ -62,8 +64,8 @@ export async function pollTriageOnce(options: TriagePollOptions): Promise<Triage
     }
 
     try {
-      await fetchBranch(options.cloneDir, pr.baseBranch);
-      await fetchBranch(options.cloneDir, pr.headBranch);
+      await fetchBranch(options.cloneDir, pr.baseBranch, options.authHeader);
+      await fetchBranch(options.cloneDir, pr.headBranch, options.authHeader);
 
       const result = await runAgenticTriagePipeline({
         repoDir: options.cloneDir,

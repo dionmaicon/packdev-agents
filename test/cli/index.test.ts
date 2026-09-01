@@ -1,0 +1,116 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const execFileAsync = promisify(execFile);
+
+const repoRoot = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
+const cliJs = path.join(repoRoot, "dist", "cli", "index.js");
+
+/**
+ * Exercises the actual COMPILED entrypoint (built by the `pretest` script),
+ * same rationale as github-action/main.test.ts: proves the process boots
+ * and reads env-based config correctly, without needing a real forge
+ * token. poll.test.ts / registry.test.ts already cover the actual
+ * polling/provider-resolution decision logic in depth.
+ *
+ * Replaces the old test/adapters/selfhosted/main.test.ts, which spawned
+ * dist/adapters/selfhosted/main.js — deleted along with that file when
+ * selfhosted/main.ts and agentic-triage/mainGitea.ts were consolidated
+ * into this single CLI. That old test kept passing locally purely because
+ * of a stale dist/ left over from before the deletion; a truly clean
+ * `rm -rf dist && npm run build && npm test` failed with MODULE_NOT_FOUND
+ * (caught in code review) — this file targets the real current entrypoint
+ * instead.
+ */
+async function runCli(
+  args: string[],
+  env: Record<string, string>,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const result = await execFileAsync("node", [cliJs, ...args], {
+    env: { ...process.env, ...env },
+  }).catch((error: { stdout: string; stderr: string; code: number }) => error);
+
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: "code" in result ? (result.code ?? 0) : 0,
+  };
+}
+
+test("no subcommand -> prints usage and exits 1", async () => {
+  const { stderr, exitCode } = await runCli([], {});
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Usage: packdev-agents <compat\|triage>/);
+});
+
+test("unknown subcommand -> prints usage and exits 1", async () => {
+  const { stderr, exitCode } = await runCli(["bogus", "--once"], {});
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Usage: packdev-agents <compat\|triage>/);
+});
+
+test("compat --once: missing REPO -> fails with a clear message, no stack trace crash", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {});
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Missing required environment variable: REPO/);
+});
+
+test("compat --once: REPO set but missing GITHUB_TOKEN (default PROVIDER=github) -> fails with a clear message", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], { REPO: "octocat/hello-world" });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Missing required environment variable: GITHUB_TOKEN/);
+});
+
+test("compat --once: malformed REPO (no slash) -> fails with a clear message", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPO: "not-owner-slash-repo",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /REPO must be "owner\/repo"/);
+});
+
+test("compat --once: provider resolves fine but neither TEST_COMMAND nor TEST_SCRIPT set -> fails with a clear message", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Exactly one of TEST_COMMAND\/TEST_SCRIPT/);
+});
+
+test("triage --once: does NOT require TEST_COMMAND/TEST_SCRIPT — fails on the model provider instead, proving the CR3 fix", async () => {
+  const { stderr, exitCode } = await runCli(["triage", "--once"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.doesNotMatch(stderr, /TEST_COMMAND/);
+  assert.match(stderr, /Missing required environment variable: ANTHROPIC_API_KEY/);
+});
+
+test("unset (loop mode): POLL_INTERVAL_SECONDS=0 is rejected before starting the loop", async () => {
+  const { stderr, exitCode } = await runCli(["compat"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    TEST_COMMAND: "true",
+    POLL_INTERVAL_SECONDS: "0",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /POLL_INTERVAL_SECONDS must be a positive number/);
+});
+
+test("unset (loop mode): POLL_INTERVAL_SECONDS=notanumber is rejected before starting the loop", async () => {
+  const { stderr, exitCode } = await runCli(["compat"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    TEST_COMMAND: "true",
+    POLL_INTERVAL_SECONDS: "notanumber",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /POLL_INTERVAL_SECONDS must be a positive number/);
+});

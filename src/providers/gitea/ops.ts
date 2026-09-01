@@ -49,13 +49,39 @@ async function giteaFetch(
  * live Gitea instance's swagger.v1.json; it is NOT the same body shape as
  * GitHub's pulls.merge, so this can't reuse github/ops.ts's call.
  */
+const COMMENT_PAGE_SIZE = 50;
+
+/**
+ * Fetches every page of comments on the PR, not just the first — a PR
+ * with enough comments to push the marker comment past page 1 would
+ * otherwise never be found, and upsertComment would POST a duplicate on
+ * every single run instead of updating the existing one.
+ */
+async function listAllComments(
+  config: GiteaOpsConfig,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<GiteaComment[]> {
+  const all: GiteaComment[] = [];
+  for (let page = 1; ; page++) {
+    const response = await giteaFetch(
+      config,
+      `/repos/${owner}/${repo}/issues/${prNumber}/comments?page=${page}&limit=${COMMENT_PAGE_SIZE}`,
+    );
+    const pageComments = (await response.json()) as GiteaComment[];
+    all.push(...pageComments);
+    if (pageComments.length < COMMENT_PAGE_SIZE) break;
+  }
+  return all;
+}
+
 export function createGiteaOps(config: GiteaOpsConfig): ForgeOps {
   const { owner, repo, prNumber } = config;
 
   return {
     async upsertComment(input: CommentInput): Promise<void> {
-      const listResponse = await giteaFetch(config, `/repos/${owner}/${repo}/issues/${prNumber}/comments`);
-      const comments = (await listResponse.json()) as GiteaComment[];
+      const comments = await listAllComments(config, owner, repo, prNumber);
       const existing = comments.find((c) => c.body?.includes(input.marker));
 
       if (existing) {

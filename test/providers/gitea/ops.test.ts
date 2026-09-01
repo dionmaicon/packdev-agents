@@ -66,6 +66,41 @@ test("upsertComment: an existing comment with the marker -> PATCHes it instead o
   }
 });
 
+test("upsertComment: the marker comment sitting on page 2 is found and PATCHed, not duplicated", async () => {
+  const calls: Call[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit = {}) => {
+    const method = init.method ?? "GET";
+    calls.push({ url, method, body: init.body ? JSON.parse(init.body as string) : undefined });
+    if (method === "GET") {
+      const page = Number(new URL(url).searchParams.get("page"));
+      // Page 1 is a full page (50 comments, none of them the marker) —
+      // must not be treated as the last page.
+      const body =
+        page === 1
+          ? Array.from({ length: 50 }, (_, i) => ({ id: i + 1, body: `comment ${i + 1}` }))
+          : [{ id: 999, body: "<!-- packdev-agents -->\nold" }];
+      return { ok: true, status: 200, json: async () => body, text: async () => "" } as Response;
+    }
+    return { ok: true, status: 200, json: async () => ({}), text: async () => "" } as Response;
+  }) as typeof fetch;
+
+  try {
+    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    await ops.upsertComment({ marker: "<!-- packdev-agents -->", body: "<!-- packdev-agents -->\nnew" });
+
+    const getPages = calls.filter((c) => c.method === "GET").map((c) => new URL(c.url).searchParams.get("page"));
+    assert.deepEqual(getPages, ["1", "2"]);
+    const patch = calls.find((c) => c.method === "PATCH");
+    const post = calls.find((c) => c.method === "POST");
+    assert.ok(patch, "expected the page-2 marker comment to be PATCHed");
+    assert.equal(post, undefined, "must not POST a duplicate when the marker was found on a later page");
+    assert.match(patch!.url, /\/repos\/o\/r\/issues\/comments\/999$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createCheckRun: no-op, Gitea has no Checks API to call", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => {

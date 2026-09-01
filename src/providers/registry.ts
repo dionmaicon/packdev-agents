@@ -1,3 +1,6 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import type { Provider, ProviderFactory } from "./types.js";
 import { createGithubProvider } from "./github/index.js";
 import { createGiteaProvider } from "./gitea/index.js";
@@ -6,6 +9,23 @@ const BUILTIN_PROVIDERS: Record<string, ProviderFactory> = {
   github: createGithubProvider,
   gitea: createGiteaProvider,
 };
+
+/**
+ * A relative ("./foo.js", "../foo.js") or absolute filesystem path in
+ * PROVIDER_MODULE must resolve against the CALLER's working directory
+ * (process.cwd() — wherever the user ran `packdev-agents` from), not
+ * against this file's own location. A bare `import("./foo.js")` resolves
+ * relative to dist/providers/registry.js instead, which silently breaks
+ * the documented local-file escape hatch for every installed copy of this
+ * package. A bare/package specifier (no leading "." or "/", e.g.
+ * "@my-org/my-provider") is left untouched so Node's normal node_modules
+ * resolution handles it.
+ */
+function resolveModuleSpecifier(specifier: string): string {
+  const isFilesystemPath = specifier.startsWith("./") || specifier.startsWith("../") || path.isAbsolute(specifier);
+  if (!isFilesystemPath) return specifier;
+  return pathToFileURL(path.resolve(process.cwd(), specifier)).href;
+}
 
 /**
  * Resolves which forge this run talks to. PROVIDER_MODULE, if set, always
@@ -19,7 +39,7 @@ const BUILTIN_PROVIDERS: Record<string, ProviderFactory> = {
 export async function resolveProvider(env: NodeJS.ProcessEnv): Promise<Provider> {
   const moduleSpecifier = env["PROVIDER_MODULE"];
   if (moduleSpecifier) {
-    const imported: unknown = await import(moduleSpecifier);
+    const imported: unknown = await import(resolveModuleSpecifier(moduleSpecifier));
     const factory = (imported as { default?: unknown }).default;
     if (typeof factory !== "function") {
       throw new Error(

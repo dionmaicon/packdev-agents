@@ -17,17 +17,20 @@
   ],
   "scripts": {
     "build": "tsc",
+    "postbuild": "chmod +x dist/cli/index.js",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "node --import tsx --test $(find test -name '*.test.ts')"
   },
   "dependencies": {
-    "@actions/core": "^3.0.1",
-    "@actions/github": "^9.1.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@octokit/rest": "^22.0.1",
     "packdev": "0.4.4",
     "semver": "^7.8.5"
+  },
+  "optionalDependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

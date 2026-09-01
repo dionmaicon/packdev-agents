@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../core/brain.js";
 import type { CompatStepResult } from "../core/pipeline.js";
 import { resolveProvider } from "../providers/registry.js";
@@ -73,7 +74,27 @@ function buildAgentLoop(): AgentLoop {
   }
 }
 
+/** Shared by both subcommands — no test-execution config here, see readTestConfig(), which only `compat` actually needs. */
 function readCommonEnv() {
+  const allowedActorsInput = env("ALLOWED_ACTORS");
+  const allowedActors = allowedActorsInput
+    ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
+    : undefined;
+
+  return {
+    cloneDir: env("CLONE_DIR") ?? "./.packdev-agents/repo",
+    allowedActors,
+    packageJsonPath: env("PACKAGE_JSON_PATH"),
+  };
+}
+
+/**
+ * `triage` never runs the app's own test command — runAgenticTriage lets
+ * the model decide what to run via packdev's own tools — so pulling this
+ * validation out of readCommonEnv() means a triage-only deployment doesn't
+ * need a meaningless dummy TEST_COMMAND just to pass a check it never uses.
+ */
+function readTestConfig(): { testCommand: string | undefined; testScript: string | undefined } {
   const testCommand = env("TEST_COMMAND");
   const testScript = env("TEST_SCRIPT");
   if (!testCommand && !testScript) {
@@ -82,25 +103,30 @@ function readCommonEnv() {
   if (testCommand && testScript) {
     throw new Error("TEST_COMMAND and TEST_SCRIPT are mutually exclusive, got both.");
   }
-  const allowedActorsInput = env("ALLOWED_ACTORS");
-  const allowedActors = allowedActorsInput
-    ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
-    : undefined;
+  return { testCommand, testScript };
+}
 
-  return {
-    cloneDir: env("CLONE_DIR") ?? "./.packdev-agents/repo",
-    testCommand,
-    testScript,
-    allowedActors,
-    packageJsonPath: env("PACKAGE_JSON_PATH"),
-  };
+/**
+ * REMOTE_URL is an optional override — by default the git remote (and its
+ * credential) comes straight from the resolved provider, which is also how
+ * the credential-safe-by-default behavior in CR8 is achieved: the provider
+ * always returns a clean URL + a per-request authHeader (see
+ * providers/types.ts's GitRemote), never a token baked into the URL
+ * itself. An explicit REMOTE_URL override still gets the same authHeader
+ * applied — harmless for a non-HTTP(S) remote (e.g. SSH), since git simply
+ * ignores http.extraHeader for those transports.
+ */
+function resolveGitRemote(provider: { createGitRemote(): { url: string; authHeader?: string | undefined } } ): { remoteUrl: string; authHeader: string | undefined } {
+  const remote = provider.createGitRemote();
+  return { remoteUrl: env("REMOTE_URL") ?? remote.url, authHeader: remote.authHeader };
 }
 
 async function runCompatOnce(): Promise<PollResult> {
   const provider = await resolveProvider(process.env);
   const common = readCommonEnv();
+  const { testCommand, testScript } = readTestConfig();
+  const { remoteUrl, authHeader } = resolveGitRemote(provider);
   const statePath = env("STATE_PATH") ?? "./.packdev-agents/state.json";
-  const remoteUrl = requireEnv("REMOTE_URL");
   const autoMerge = env("AUTO_MERGE") === "true";
   const testCombinedBumpInput = env("TEST_COMBINED_BUMP");
   const testCombinedBump = testCombinedBumpInput !== undefined ? testCombinedBumpInput === "true" : undefined;
@@ -108,8 +134,9 @@ async function runCompatOnce(): Promise<PollResult> {
   const result = await pollOnce({
     cloneDir: common.cloneDir,
     remoteUrl,
+    authHeader,
     statePath,
-    ...(common.testScript ? { testScript: common.testScript } : { testCommand: common.testCommand }),
+    ...(testScript ? { testScript } : { testCommand }),
     prSource: provider.createPullRequestSource(),
     forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
     allowedActors: common.allowedActors,
@@ -158,14 +185,15 @@ async function runCompatOnce(): Promise<PollResult> {
 async function runTriageOnce(): Promise<TriagePollResult> {
   const provider = await resolveProvider(process.env);
   const common = readCommonEnv();
+  const { remoteUrl, authHeader } = resolveGitRemote(provider);
   // Separate state file from compat's own — see poll.ts's TriagePollOptions doc comment.
   const statePath = env("TRIAGE_STATE_PATH") ?? "./.packdev-agents/triage-state.json";
-  const remoteUrl = requireEnv("REMOTE_URL");
   const maxTurnsInput = env("MAX_TURNS");
 
   const result = await pollTriageOnce({
     cloneDir: common.cloneDir,
     remoteUrl,
+    authHeader,
     statePath,
     prSource: provider.createPullRequestSource(),
     forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
@@ -203,15 +231,19 @@ const USAGE = `Usage: packdev-agents <compat|triage> [--once]
 
 Env vars (both subcommands):
   REPO              "owner/repo"
-  REMOTE_URL        git remote to clone (must include auth if private, e.g. https://user:token@host/owner/repo.git)
+  REMOTE_URL        optional override for the git clone URL — by default this is
+                    derived from PROVIDER/REPO with credentials applied per-request,
+                    never embedded in the URL itself (see docs/self-hosted.md)
   PROVIDER          "github" (default) or "gitea"
-  PROVIDER_MODULE   path to a custom provider module (overrides PROVIDER) — see docs
+  PROVIDER_MODULE   path (relative to cwd) or package specifier for a custom
+                    provider module (overrides PROVIDER) — see docs/self-hosted.md
   GITHUB_TOKEN      required when PROVIDER=github
   GITEA_URL, GITEA_TOKEN   required when PROVIDER=gitea
-  TEST_COMMAND | TEST_SCRIPT   exactly one required
   ALLOWED_ACTORS, PACKAGE_JSON_PATH, CLONE_DIR, POLL_INTERVAL_SECONDS   optional
+                    (POLL_INTERVAL_SECONDS must be a positive number; only used without --once)
 
 compat-only:
+  TEST_COMMAND | TEST_SCRIPT   exactly one required
   STATE_PATH, AUTO_MERGE, TEST_COMBINED_BUMP
   BRAIN=anthropic|openai-compatible + ANTHROPIC_*/OPENAI_COMPATIBLE_*   optional failure-summary prose
 
@@ -239,7 +271,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const intervalSeconds = Number(env("POLL_INTERVAL_SECONDS") ?? "300");
+  const intervalSecondsInput = env("POLL_INTERVAL_SECONDS") ?? "300";
+  const intervalSeconds = Number(intervalSecondsInput);
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+    // A NaN/negative/zero interval would make setTimeout fire effectively
+    // immediately, turning a poll loop into a tight loop hammering the
+    // forge API — a plain typo in this env var must fail loudly here, not
+    // manifest as a mysterious rate-limit ban later.
+    throw new Error(`POLL_INTERVAL_SECONDS must be a positive number, got "${intervalSecondsInput}"`);
+  }
   const loop = createPollLoop({ runOnce, sleep, intervalMs: intervalSeconds * 1000 });
   process.once("SIGINT", loop.stop);
   process.once("SIGTERM", loop.stop);

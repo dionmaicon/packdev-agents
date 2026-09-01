@@ -8,6 +8,8 @@ export interface PollOptions {
   /** Local working copy of the target repo. Cloned on first use, fetched to update on later polls. */
   cloneDir: string;
   remoteUrl: string;
+  /** "Authorization: ..." applied per git invocation, never persisted to .git/config — see repoSync.ts's authArgs and providers/types.ts's GitRemote. */
+  authHeader?: string | undefined;
   /** Where seen-PR state (see state.ts) is persisted between polls/restarts. */
   statePath: string;
   /** Exactly one of testCommand/testScript is required — see runCompatPipeline's doc comment. */
@@ -68,7 +70,7 @@ export interface PollResult {
  * longer blocks anyone else.
  */
 export async function pollOnce(options: PollOptions): Promise<PollResult> {
-  await ensureLocalClone({ cloneDir: options.cloneDir, remoteUrl: options.remoteUrl });
+  await ensureLocalClone({ cloneDir: options.cloneDir, remoteUrl: options.remoteUrl, authHeader: options.authHeader });
 
   const state = await loadSeenState(options.statePath);
   const allPRs = await options.prSource.listOpenBotPRs();
@@ -87,8 +89,8 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
     }
 
     try {
-      await fetchBranch(options.cloneDir, pr.baseBranch);
-      await fetchBranch(options.cloneDir, pr.headBranch);
+      await fetchBranch(options.cloneDir, pr.baseBranch, options.authHeader);
+      await fetchBranch(options.cloneDir, pr.headBranch, options.authHeader);
 
       const result = await runCompatPipeline({
         repoDir: options.cloneDir,

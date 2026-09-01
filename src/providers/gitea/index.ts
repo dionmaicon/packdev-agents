@@ -25,5 +25,13 @@ export const createGiteaProvider: ProviderFactory = (env): Provider => {
   return {
     createPullRequestSource: () => createGiteaPullRequestSource({ baseUrl, token, owner, repo }),
     createForgeOpsFor: (pr) => createGiteaOps({ baseUrl, token, owner, repo, prNumber: pr.number }),
+    createGitRemote: () => ({
+      url: `${baseUrl}/${owner}/${repo}.git`,
+      // Gitea's git-http-backend accepts a personal access token as the
+      // Basic-auth password (any username) — same scheme as github/index.ts,
+      // see GitRemote's doc comment in providers/types.ts for why this is a
+      // per-request header, not embedded in `url`.
+      authHeader: `Authorization: Basic ${Buffer.from(`${token}:`).toString("base64")}`,
+    }),
   };
 };

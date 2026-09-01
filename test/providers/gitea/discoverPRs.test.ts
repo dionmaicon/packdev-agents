@@ -6,7 +6,7 @@ import { createGiteaPullRequestSource } from "../../../src/providers/gitea/disco
 test("listOpenBotPRs: maps a real Gitea PR list response shape onto OpenBotPR", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
-    assert.match(url, /\/repos\/o\/r\/pulls\?state=open$/);
+    assert.match(url, /\/repos\/o\/r\/pulls\?state=open&page=1&limit=50$/);
     return {
       ok: true,
       json: async () => [
@@ -27,6 +27,35 @@ test("listOpenBotPRs: maps a real Gitea PR list response shape onto OpenBotPR", 
     assert.deepEqual(prs, [
       { number: 7, actor: "renovate", baseBranch: "master", baseSha: "aaa", headBranch: "renovate/foo-1.x", headSha: "bbb" },
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("listOpenBotPRs: a full first page means there might be more — fetches page 2 too, stops on a short page", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedPages: number[] = [];
+  const makePr = (n: number) => ({
+    number: n,
+    user: { login: "renovate" },
+    base: { ref: "master", sha: `base${n}` },
+    head: { ref: `bump-${n}`, sha: `head${n}` },
+  });
+
+  globalThis.fetch = (async (url: string) => {
+    const page = Number(new URL(url).searchParams.get("page"));
+    requestedPages.push(page);
+    // Page 1 is a FULL page (exactly limit=50) — must not be treated as the last page.
+    const prs = page === 1 ? Array.from({ length: 50 }, (_, i) => makePr(i + 1)) : [makePr(51)];
+    return { ok: true, json: async () => prs, text: async () => "" } as Response;
+  }) as typeof fetch;
+
+  try {
+    const source = createGiteaPullRequestSource({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r" });
+    const prs = await source.listOpenBotPRs();
+    assert.deepEqual(requestedPages, [1, 2]);
+    assert.equal(prs.length, 51);
+    assert.equal(prs[50]!.number, 51);
   } finally {
     globalThis.fetch = originalFetch;
   }

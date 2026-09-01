@@ -32,15 +32,20 @@ of a hosted API.
 Not every user has a public webhook endpoint or a VPS, so the trigger can't
 assume inbound connectivity. Two options, in order of rollout priority:
 
-### 2a. Polling (v1 — zero infra, ship first)
+### 2a. Polling (shipped — see `docs/self-hosted.md`)
 
-- A daemon/cron job on the user's box polls
-  `GET /repos/:owner/:repo/pulls?...` on an interval, filtering for new
-  dependabot/Renovate PRs.
+- A daemon/cron job on the user's box polls for open bot PRs on an
+  interval — GitHub's `GET /repos/:owner/:repo/pulls` or the forge's own
+  equivalent (Gitea's REST API is built in too; anything else plugs in via
+  `PROVIDER_MODULE`, no fork required).
 - On a new PR: clone the branch, run packdev compat locally, hit the local
-  model for the verdict, post the comment via the user's own `gh` token.
+  model for the verdict, post the comment back via the resolved provider's
+  own credential (GitHub PAT, Gitea token, or whatever a custom provider
+  supplies) — never GitHub-specific, and never baked into the clone URL
+  (see `docs/self-hosted.md`'s Credentials section).
 - Higher latency than a webhook, but requires nothing beyond the box already
-  running the daemon. Good first self-hosted implementation.
+  running the daemon. Ships as `packdev-agents compat`/`packdev-agents triage`
+  (npm package `@packdev/agents`, or a Docker image) — see `docs/self-hosted.md`.
 
 ### 2b. Webhook relay (v2 — deferred until there's demand)
 

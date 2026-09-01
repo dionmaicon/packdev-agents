@@ -17,7 +17,11 @@ FROM node:24-alpine
 RUN apk add --no-cache git
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# --omit=optional excludes @actions/core and @actions/github (only needed
+# by the GitHub-Action-only entrypoints, never by this self-hosted CLI) —
+# keeps the "zero GitHub dependency" runtime claim actually true for the
+# artifact that ships here, not just for the source code's import graph.
+RUN npm ci --omit=dev --omit=optional
 COPY --from=build /app/dist ./dist
 RUN addgroup -S packdev && adduser -S packdev -G packdev \
     && mkdir -p /app/.packdev-agents && chown -R packdev:packdev /app

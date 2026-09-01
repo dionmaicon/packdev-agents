@@ -21,11 +21,19 @@ function parseRepo(env: NodeJS.ProcessEnv): { owner: string; repo: string } {
 /** Built-in "github" provider — see registry.ts for how PROVIDER selects this. */
 export const createGithubProvider: ProviderFactory = (env): Provider => {
   const { owner, repo } = parseRepo(env);
-  const octokit = new Octokit({ auth: requireEnv(env, "GITHUB_TOKEN") });
+  const token = requireEnv(env, "GITHUB_TOKEN");
+  const octokit = new Octokit({ auth: token });
 
   return {
     createPullRequestSource: () => createOctokitPullRequestSource({ octokit, owner, repo }),
     createForgeOpsFor: (pr) =>
       createOctokitOps({ octokit, owner, repo, prNumber: pr.number, headSha: pr.headSha }),
+    createGitRemote: () => ({
+      url: `https://github.com/${owner}/${repo}.git`,
+      // Same Basic-auth shape git itself generates for a `https://TOKEN@host/...`
+      // URL — just applied per-request instead of persisted to disk. See
+      // GitRemote's doc comment in providers/types.ts.
+      authHeader: `Authorization: Basic ${Buffer.from(`${token}:`).toString("base64")}`,
+    }),
   };
 };
