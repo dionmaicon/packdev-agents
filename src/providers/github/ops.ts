@@ -1,8 +1,8 @@
-import type { getOctokit } from "@actions/github";
-import type { GitHubOps, CommentInput, CheckRunInput } from "../../core/pipeline.js";
+import type { Octokit } from "@octokit/rest";
+import type { ForgeOps, CommentInput, CheckRunInput } from "../../core/pipeline.js";
 
 export interface OctokitOpsConfig {
-  octokit: ReturnType<typeof getOctokit>;
+  octokit: Octokit;
   owner: string;
   repo: string;
   prNumber: number;
@@ -10,17 +10,16 @@ export interface OctokitOpsConfig {
 }
 
 /**
- * The real GitHub API wiring behind GitHubOps. Deliberately thin — all the
- * actual decision logic lives in the pipelines that consume GitHubOps and
+ * The real GitHub API wiring behind ForgeOps. Deliberately thin — all the
+ * actual decision logic lives in the pipelines that consume ForgeOps and
  * is tested there without needing GitHub API access. This file just
- * translates GitHubOps calls into Octokit calls; if something here is
+ * translates ForgeOps calls into Octokit calls; if something here is
  * wrong it will show up as a broken PR comment/check in practice, not as
- * a subtle logic bug. Lives under adapters/shared/, not any one specific
- * adapter's directory, because every adapter that talks to GitHub
- * (github-action, selfhosted, agentic-triage) needs the exact same
- * translation — adapters don't import each other, only core and shared.
+ * a subtle logic bug. Uses plain @octokit/rest, not @actions/github — this
+ * is the self-hosted/library-embeddable path, so it must not depend on
+ * GitHub-Actions-only tooling (that's adapters/github-action/main.ts's job).
  */
-export function createOctokitOps(config: OctokitOpsConfig): GitHubOps {
+export function createOctokitOps(config: OctokitOpsConfig): ForgeOps {
   const { octokit, owner, repo, prNumber, headSha } = config;
 
   return {

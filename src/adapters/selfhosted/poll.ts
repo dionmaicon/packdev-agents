@@ -1,8 +1,8 @@
-import { runGithubPipeline, DEFAULT_ALLOWED_ACTORS, type GitHubOps, type RunGithubPipelineResult } from "../../core/pipeline.js";
+import { runCompatPipeline, DEFAULT_ALLOWED_ACTORS, type ForgeOps, type RunCompatPipelineResult } from "../../core/pipeline.js";
 import type { Brain } from "../../core/brain.js";
 import { ensureLocalClone, fetchBranch } from "./repoSync.js";
 import { loadSeenState, saveSeenState } from "./state.js";
-import type { OpenBotPR, PullRequestSource } from "./discoverPRs.js";
+import type { OpenBotPR, PullRequestSource } from "../../providers/types.js";
 
 export interface PollOptions {
   /** Local working copy of the target repo. Cloned on first use, fetched to update on later polls. */
@@ -10,24 +10,24 @@ export interface PollOptions {
   remoteUrl: string;
   /** Where seen-PR state (see state.ts) is persisted between polls/restarts. */
   statePath: string;
-  /** Exactly one of testCommand/testScript is required — see runGithubPipeline's doc comment. */
+  /** Exactly one of testCommand/testScript is required — see runCompatPipeline's doc comment. */
   testCommand?: string | undefined;
   testScript?: string | undefined;
   prSource: PullRequestSource;
-  /** Builds the GitHubOps sink for a specific PR — needs the PR number and head SHA to address comments/checks at. */
-  githubOpsFor: (pr: OpenBotPR) => GitHubOps;
-  /** See RunGithubPipelineOptions.packageJsonPath — for a monorepo target, e.g. "packages/api/package.json". */
+  /** Builds the ForgeOps sink for a specific PR — needs the PR number and head SHA to address comments/checks at. */
+  forgeOpsFor: (pr: OpenBotPR) => ForgeOps;
+  /** See RunCompatPipelineOptions.packageJsonPath — for a monorepo target, e.g. "packages/api/package.json". */
   packageJsonPath?: string | undefined;
   allowedActors?: string[] | undefined;
   autoMerge?: boolean | undefined;
-  /** See RunGithubPipelineOptions.testCombinedBump. Defaults to true. */
+  /** See RunCompatPipelineOptions.testCombinedBump. Defaults to true. */
   testCombinedBump?: boolean | undefined;
   brain?: Brain | undefined;
 }
 
 export interface ProcessedPR {
   pr: OpenBotPR;
-  result: RunGithubPipelineResult;
+  result: RunCompatPipelineResult;
 }
 
 export interface FailedPR {
@@ -90,7 +90,7 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
       await fetchBranch(options.cloneDir, pr.baseBranch);
       await fetchBranch(options.cloneDir, pr.headBranch);
 
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir: options.cloneDir,
         // Exact SHAs from the PR API response, not the branch names just
         // fetched — a branch can move between the fetch above and
@@ -99,7 +99,7 @@ export async function pollOnce(options: PollOptions): Promise<PollResult> {
         headRef: pr.headSha,
         actor: pr.actor,
         ...(options.testScript ? { testScript: options.testScript } : { testCommand: options.testCommand }),
-        github: options.githubOpsFor(pr),
+        forge: options.forgeOpsFor(pr),
         allowedActors: options.allowedActors,
         autoMerge: options.autoMerge,
         brain: options.brain,

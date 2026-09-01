@@ -1,13 +1,14 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import type { Octokit } from "@octokit/rest";
 
 import {
-  runGithubPipeline,
+  runCompatPipeline,
   checkConclusionFor,
   checkConclusionForCrossFile,
   checkConclusionForIndependent,
 } from "../../core/pipeline.js";
-import { createOctokitOps } from "../shared/octokitOps.js";
+import { createOctokitOps } from "../../providers/github/ops.js";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../../core/brain.js";
 
 function buildBrain(): Brain | undefined {
@@ -69,7 +70,13 @@ async function run(): Promise<void> {
   const testCombinedBumpInput = core.getInput("test-combined-bump");
   const testCombinedBump = testCombinedBumpInput ? core.getBooleanInput("test-combined-bump") : undefined;
 
-  const octokit = github.getOctokit(token);
+  // @actions/github's GitHub client and @octokit/rest's Octokit are the
+  // same runtime shape (both built on @octokit/core + the REST/paginate
+  // plugins) but typed slightly differently by their respective packages
+  // — ops.ts/discoverPRs.ts are typed against plain @octokit/rest so they
+  // stay usable outside a GitHub Action context; this cast bridges that
+  // typing gap at the one place it actually exists.
+  const octokit = github.getOctokit(token) as unknown as Octokit;
   const { owner, repo } = github.context.repo;
 
   const githubOps = createOctokitOps({
@@ -80,7 +87,7 @@ async function run(): Promise<void> {
     headSha: pr.head.sha,
   });
 
-  const result = await runGithubPipeline({
+  const result = await runCompatPipeline({
     repoDir: process.cwd(),
     // SHAs, not branch names: actions/checkout may not create a local
     // branch ref for the base branch even with fetch-depth: 0, but the
@@ -90,7 +97,7 @@ async function run(): Promise<void> {
     headRef: pr.head.sha,
     actor: pr.user.login,
     ...(testScriptInput ? { testScript: testScriptInput } : { testCommand: testCommandInput }),
-    github: githubOps,
+    forge: githubOps,
     allowedActors,
     autoMerge,
     brain: buildBrain(),

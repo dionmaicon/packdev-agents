@@ -1,12 +1,20 @@
 {
-  "name": "packdev-agents",
+  "name": "@packdev/agents",
   "version": "0.1.0",
-  "private": true,
-  "description": "Dependabot/Renovate PR triage: run packdev compat checks and report a verdict back on the PR.",
+  "description": "Dependabot/Renovate PR triage: run packdev compat checks and report a verdict back on the PR. Self-hosted CLI supports any forge (GitHub, Gitea, or a custom PROVIDER_MODULE) — no GitHub dependency required.",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
   },
+  "bin": {
+    "packdev-agents": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -17,6 +25,7 @@
     "@actions/core": "^3.0.1",
     "@actions/github": "^9.1.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@octokit/rest": "^22.0.1",
     "packdev": "0.4.4",
     "semver": "^7.8.5"
   },

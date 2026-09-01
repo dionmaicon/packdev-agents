@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createOctokitOps } from "../../../src/adapters/shared/octokitOps.js";
+import { createOctokitOps } from "../../../src/providers/github/ops.js";
 
 /**
  * Minimal fake of the slice of Octokit this file actually touches — enough

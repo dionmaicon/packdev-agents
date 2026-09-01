@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
-  runGithubPipeline,
-  type GitHubOps,
+  runCompatPipeline,
+  type ForgeOps,
   type CommentInput,
   type CheckRunInput,
 } from "../../src/core/pipeline.ts";
@@ -108,7 +108,7 @@ async function makeMonorepo(
   };
 }
 
-function fakeGitHubOps(): GitHubOps & {
+function fakeGitHubOps(): ForgeOps & {
   comments: CommentInput[];
   checkRuns: CheckRunInput[];
   mergeCalls: number;
@@ -134,20 +134,20 @@ function fakeGitHubOps(): GitHubOps & {
   };
 }
 
-test("runGithubPipeline: actor not in allowedActors -> skipped-actor, zero GitHub calls", async () => {
+test("runCompatPipeline: actor not in allowedActors -> skipped-actor, zero GitHub calls", async () => {
   const { repoDir, cleanup } = await makeRepo(
     { "is-odd": "3.0.0" },
     { "is-odd": "3.0.1" },
   );
   try {
     const github = fakeGitHubOps();
-    const result = await runGithubPipeline({
+    const result = await runCompatPipeline({
       repoDir,
       baseRef: "base",
       headRef: "HEAD",
       actor: "some-random-human",
       testCommand: "true",
-      github,
+      forge: github,
     });
 
     assert.equal(result.status, "skipped-actor");
@@ -158,7 +158,7 @@ test("runGithubPipeline: actor not in allowedActors -> skipped-actor, zero GitHu
   }
 });
 
-test("runGithubPipeline: same-file bump across MULTIPLE package.json files stays unsupported-bump (too compound a shape for v1)", async () => {
+test("runCompatPipeline: same-file bump across MULTIPLE package.json files stays unsupported-bump (too compound a shape for v1)", async () => {
   const monorepoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-pipeline-multi-file-"));
   try {
     await git(monorepoDir, ["init", "-q"]);
@@ -194,13 +194,13 @@ test("runGithubPipeline: same-file bump across MULTIPLE package.json files stays
     await git(monorepoDir, ["commit", "-q", "-m", "unrelated bumps in two files"]);
 
     const github = fakeGitHubOps();
-    const result = await runGithubPipeline({
+    const result = await runCompatPipeline({
       repoDir: monorepoDir,
       baseRef: "base",
       headRef: "HEAD",
       actor: "dependabot[bot]",
       testCommand: "true",
-      github,
+      forge: github,
     });
 
     assert.equal(result.status, "unsupported-bump");
@@ -214,7 +214,7 @@ test("runGithubPipeline: same-file bump across MULTIPLE package.json files stays
 });
 
 test(
-  "runGithubPipeline: same-file bump with DIFFERING target versions -> independent-verdict, each bump tested in isolation plus a real combined run",
+  "runCompatPipeline: same-file bump with DIFFERING target versions -> independent-verdict, each bump tested in isolation plus a real combined run",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -228,7 +228,7 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
@@ -236,7 +236,7 @@ test(
         testCommand:
           'node -e "const isOdd=require(\'is-odd\'); const { Command } = require(\'commander\'); ' +
           "if(isOdd(3)!==true) process.exit(1); if(typeof Command!=='function') process.exit(1);\"",
-        github,
+        forge: github,
       });
 
       assert.equal(result.status, "independent-verdict");
@@ -259,7 +259,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: independent bumps, each PASSES in isolation but the combined state FAILS -> merged: false (the interaction-bug case runCombinedTest exists for, previously untested)",
+  "runCompatPipeline: independent bumps, each PASSES in isolation but the combined state FAILS -> merged: false (the interaction-bug case runCombinedTest exists for, previously untested)",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -268,7 +268,7 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
@@ -288,7 +288,7 @@ test(
           "const v1=JSON.parse(fs.readFileSync('./node_modules/is-odd/package.json')).version; " +
           "const v2=JSON.parse(fs.readFileSync('./node_modules/commander/package.json')).version; " +
           "if (v1==='3.0.1' && v2==='11.1.0') process.exit(1);\"",
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -314,7 +314,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: independent bumps with testCombinedBump: false -> combined run is skipped, doesn't block merge",
+  "runCompatPipeline: independent bumps with testCombinedBump: false -> combined run is skipped, doesn't block merge",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -323,7 +323,7 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
@@ -331,7 +331,7 @@ test(
         testCommand:
           'node -e "const isOdd=require(\'is-odd\'); const { Command } = require(\'commander\'); ' +
           "if(isOdd(3)!==true) process.exit(1); if(typeof Command!=='function') process.exit(1);\"",
-        github,
+        forge: github,
         testCombinedBump: false,
         autoMerge: true,
       });
@@ -349,7 +349,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: single bump, PASSED, autoMerge off by default -> success check, no merge call",
+  "runCompatPipeline: single bump, PASSED, autoMerge off by default -> success check, no merge call",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -358,14 +358,14 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
-        github,
+        forge: github,
       });
 
       assert.equal(result.status, "verdict");
@@ -386,7 +386,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: single bump, PASSED, autoMerge on -> merges exactly once",
+  "runCompatPipeline: single bump, PASSED, autoMerge on -> merges exactly once",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -395,14 +395,14 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -418,7 +418,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: candidate genuinely incompatible -> failure check, never merges even with autoMerge on",
+  "runCompatPipeline: candidate genuinely incompatible -> failure check, never merges even with autoMerge on",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -432,14 +432,14 @@ test(
       // candidate — but since we need the candidate specifically to differ
       // from control for a real INCOMPATIBLE (not HARNESS_BROKEN), use a
       // command that only fails on the exact candidate version string.
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "const v=require(\'is-odd/package.json\').version; if (v === \'3.0.1\') process.exit(1)"',
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -457,7 +457,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: cleans up its workspace temp dir after a normal run",
+  "runCompatPipeline: cleans up its workspace temp dir after a normal run",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -475,13 +475,13 @@ test(
     process.env.TMPDIR = isolatedTmp;
     try {
       const github = fakeGitHubOps();
-      await runGithubPipeline({
+      await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand: "true",
-        github,
+        forge: github,
       });
       // packdev's own compat run legitimately leaves a lockfile snapshot
       // dir behind under the same TMPDIR (by design — reproducibility
@@ -506,7 +506,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: test command broken for reasons unrelated to the bump -> HARNESS_BROKEN, never blames the bump",
+  "runCompatPipeline: test command broken for reasons unrelated to the bump -> HARNESS_BROKEN, never blames the bump",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -517,13 +517,13 @@ test(
       const github = fakeGitHubOps();
       // Fails identically for control AND candidate — a broken harness,
       // not a real incompatibility signal from either version.
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand: 'node -e "require(\'this-module-does-not-exist-xyz\')"',
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -542,7 +542,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: passing candidate with a type-check-only test command -> PASSED_WEAK, not auto-merge eligible",
+  "runCompatPipeline: passing candidate with a type-check-only test command -> PASSED_WEAK, not auto-merge eligible",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -597,13 +597,13 @@ test(
       // A bare `tsc --noEmit` is packdev's TYPE_CHECK_ONLY trigger
       // (src/compat.ts's analyzeTestHarness) — matched on the command
       // string itself, independent of whether it actually passes.
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand: "npx tsc --noEmit",
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -622,7 +622,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: packageJsonPath targets a workspace member, not the monorepo root",
+  "runCompatPipeline: packageJsonPath targets a workspace member, not the monorepo root",
   { timeout: 120_000 },
   async () => {
     const { repoDir, packageJsonPath, cleanup } = await makeMonorepo(
@@ -631,14 +631,14 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
-        github,
+        forge: github,
         packageJsonPath,
       });
 
@@ -665,7 +665,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: packageJsonPath — a genuinely incompatible bump in a workspace member is still caught",
+  "runCompatPipeline: packageJsonPath — a genuinely incompatible bump in a workspace member is still caught",
   { timeout: 120_000 },
   async () => {
     const { repoDir, packageJsonPath, cleanup } = await makeMonorepo(
@@ -674,14 +674,14 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "const v=require(\'is-odd/package.json\').version; if (v === \'3.0.1\') process.exit(1)"',
-        github,
+        forge: github,
         packageJsonPath,
       });
 
@@ -697,7 +697,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: NO packageJsonPath given — auto-discovers which workspace member changed, with two members present",
+  "runCompatPipeline: NO packageJsonPath given — auto-discovers which workspace member changed, with two members present",
   { timeout: 120_000 },
   async () => {
     const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-monorepo2-"));
@@ -750,14 +750,14 @@ test(
       await git(repoDir, ["commit", "-q", "-m", "bump is-odd in worker only"]);
 
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
-        github,
+        forge: github,
         // No packageJsonPath — this is the point of the test.
       });
 
@@ -809,7 +809,7 @@ async function makeRepoWithUsage(
 }
 
 test(
-  "runGithubPipeline: a symbol missing at BOTH control and candidate is a pre-existing issue, NOT a bump regression — falls through to real compat instead of a false static-incompatible",
+  "runCompatPipeline: a symbol missing at BOTH control and candidate is a pre-existing issue, NOT a bump regression — falls through to real compat instead of a false static-incompatible",
   { timeout: 60_000 },
   async () => {
     // Real bug, found live: is-odd never had a named "isOdd" export at ANY
@@ -827,13 +827,13 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand: "true",
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -849,7 +849,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: dynamic (bare require) usage never short-circuits — always falls through to the real compat run",
+  "runCompatPipeline: dynamic (bare require) usage never short-circuits — always falls through to the real compat run",
   { timeout: 120_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepoWithUsage(
@@ -859,14 +859,14 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
-        github,
+        forge: github,
       });
 
       assert.equal(result.status, "verdict");
@@ -880,7 +880,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: grouped bump with the SAME target version — pins companions via --group, real PASSED verdict against a real @nestjs/* family bump",
+  "runCompatPipeline: grouped bump with the SAME target version — pins companions via --group, real PASSED verdict against a real @nestjs/* family bump",
   { timeout: 60_000 },
   async () => {
     const { repoDir, cleanup } = await makeRepo(
@@ -901,14 +901,14 @@ test(
     );
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "require(\'reflect-metadata\'); const { Module } = require(\'@nestjs/common\'); const { NestFactory } = require(\'@nestjs/core\'); if (typeof Module !== \'function\' || typeof NestFactory !== \'object\') process.exit(1)"',
-        github,
+        forge: github,
       });
 
       assert.equal(result.status, "verdict");
@@ -934,7 +934,7 @@ test(
 
 
 test(
-  "runGithubPipeline: cross-file bump — the SAME package bumped to the SAME version in two independent apps runs once per app and aggregates a real verdict",
+  "runCompatPipeline: cross-file bump — the SAME package bumped to the SAME version in two independent apps runs once per app and aggregates a real verdict",
   { timeout: 60_000 },
   async () => {
     const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-crossfile-"));
@@ -972,14 +972,14 @@ test(
       await git(repoDir, ["commit", "-q", "-m", "bump @nestjs/core in both apps"]);
 
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand:
           'node -e "require(\'reflect-metadata\'); require(\'@nestjs/core\')"',
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -1013,7 +1013,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: cross-file bump, ONE app fails and one passes -> merged: false (the exact safety property the docs call out, previously untested)",
+  "runCompatPipeline: cross-file bump, ONE app fails and one passes -> merged: false (the exact safety property the docs call out, previously untested)",
   { timeout: 60_000 },
   async () => {
     const repoDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-crossfile-onefail-"));
@@ -1051,7 +1051,7 @@ test(
       await git(repoDir, ["commit", "-q", "-m", "bump @nestjs/core in both apps"]);
 
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
@@ -1068,7 +1068,7 @@ test(
           'node -e "require(\'reflect-metadata\'); require(\'@nestjs/core\'); ' +
           "const pkg=JSON.parse(require('fs').readFileSync('./package.json')); " +
           'if (pkg.name.includes(\'notifier\')) process.exit(1)"',
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -1129,13 +1129,13 @@ async function makeBuildDependentRepo(dir: string): Promise<string> {
 }
 
 test(
-  "runGithubPipeline: a bare 'npm test' whose pretest hook builds the app -> the app's own lifecycle hooks still run, producing a real PASSED",
+  "runCompatPipeline: a bare 'npm test' whose pretest hook builds the app -> the app's own lifecycle hooks still run, producing a real PASSED",
   { timeout: 60_000 },
   async () => {
     const repoDir = await makeBuildDependentRepo("packdev-agents-pretest-hooks-");
     try {
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
@@ -1143,7 +1143,7 @@ test(
         // The natural thing to write, and exactly the config that used to
         // produce a silent false PASSED against an unbuilt tree.
         testCommand: "npm test",
-        github,
+        forge: github,
         autoMerge: true,
       });
 
@@ -1163,7 +1163,7 @@ test(
 );
 
 test(
-  "runGithubPipeline: a test suite that runs ZERO tests never reports a clean PASSED, and never auto-merges",
+  "runCompatPipeline: a test suite that runs ZERO tests never reports a clean PASSED, and never auto-merges",
   { timeout: 60_000 },
   async () => {
     // The other half of dionmaicon/packdev#6: an exit-0 harness that tested
@@ -1204,13 +1204,13 @@ test(
       await git(repoDir, ["commit", "-q", "-m", "bump"]);
 
       const github = fakeGitHubOps();
-      const result = await runGithubPipeline({
+      const result = await runCompatPipeline({
         repoDir,
         baseRef: "base",
         headRef: "HEAD",
         actor: "dependabot[bot]",
         testCommand: "npm test",
-        github,
+        forge: github,
         autoMerge: true,
       });
 

@@ -14,7 +14,7 @@ import {
 } from "../../../src/adapters/agentic-triage/pipeline.ts";
 import { createAnthropicAgentLoop, type AgentLoop } from "../../../src/adapters/agentic-triage/agentLoop.ts";
 import type {
-  GitHubOps,
+  ForgeOps,
   CommentInput,
   CheckRunInput,
 } from "../../../src/core/pipeline.ts";
@@ -61,7 +61,7 @@ async function makeRepoWithUsage(
   return { repoDir, cleanup: () => rm(repoDir, { recursive: true, force: true }) };
 }
 
-function fakeGitHubOps(): GitHubOps & { comments: CommentInput[]; checkRuns: CheckRunInput[]; mergeCalls: number } {
+function fakeGitHubOps(): ForgeOps & { comments: CommentInput[]; checkRuns: CheckRunInput[]; mergeCalls: number } {
   const comments: CommentInput[] = [];
   const checkRuns: CheckRunInput[] = [];
   let mergeCalls = 0;
@@ -124,7 +124,7 @@ test("runAgenticTriagePipeline: actor not allowed -> skipped-actor, zero GitHub 
       baseRef: "base",
       headRef: "HEAD",
       actor: "some-random-human",
-      github,
+      forge: github,
       agentLoop: neverCalledAgentLoop,
     });
 
@@ -149,7 +149,7 @@ test("runAgenticTriagePipeline: grouped bump -> unsupported-bump, no MCP/model c
       baseRef: "base",
       headRef: "HEAD",
       actor: "dependabot[bot]",
-      github,
+      forge: github,
       agentLoop: neverCalledAgentLoop,
     });
 
@@ -181,7 +181,7 @@ test(
             baseRef: "base",
             headRef: "HEAD",
             actor: "dependabot[bot]",
-            github,
+            forge: github,
             agentLoop: createAnthropicAgentLoop({ apiKey: "test-key", baseUrl }),
           });
 
