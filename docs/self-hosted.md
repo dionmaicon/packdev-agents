@@ -6,6 +6,51 @@ Forge-agnostic — GitHub and Gitea are both built in, and anything else
 (GitLab, Bitbucket, a private forge) can be added without a PR to this repo
 via `PROVIDER_MODULE`.
 
+## Quick start: 3 choices, then run
+
+Every deployment makes the same three decisions. Everything else in this
+doc is optional tuning.
+
+1. **Which subcommand?** Run either, or both — they're independent and
+   never conflict:
+   - `compat` — deterministic pass/fail verdict, can auto-merge
+   - `triage` — experimental LLM advisory comment, never merges
+2. **Which forge?** Set `PROVIDER` (or `PROVIDER_MODULE` for anything not
+   built in — see below):
+   - `github` (default) — needs `GITHUB_TOKEN`
+   - `gitea` — needs `GITEA_URL` + `GITEA_TOKEN` + `GITEA_USERNAME`
+3. **How does it run?** `--once` from your own cron/systemd timer, the
+   built-in poll loop, or the Docker image — see "Install" below.
+
+Minimal working example, GitHub, `compat` only, single run:
+
+```sh
+npm install -g @packdev/agents
+REPO=owner/repo GITHUB_TOKEN=ghp_... TEST_COMMAND="npm test" \
+  packdev-agents compat --once
+```
+
+Same, but against Gitea:
+
+```sh
+REPO=owner/repo PROVIDER=gitea \
+  GITEA_URL=https://gitea.example.com GITEA_TOKEN=... GITEA_USERNAME=... \
+  TEST_COMMAND="npm test" \
+  packdev-agents compat --once
+```
+
+Add the advisory pass on top (needs a model — hosted Anthropic shown here,
+`openai-compatible` also covers a local Ollama/vLLM endpoint):
+
+```sh
+REPO=owner/repo GITHUB_TOKEN=ghp_... ANTHROPIC_API_KEY=sk-ant-... \
+  packdev-agents triage --once
+```
+
+Everything past this point is reference detail for tuning one of those
+three choices — required vs. optional env vars, the credential model, the
+`PROVIDER_MODULE` contract for a forge that isn't built in, and Docker.
+
 ## Install
 
 **npm:**
@@ -120,7 +165,11 @@ const createProvider: ProviderFactory = (env) => {
       url: `https://my-forge.example.com/${env.MY_FORGE_OWNER}/${env.MY_FORGE_REPO}.git`,
       // Optional. Applied per git invocation via -c http.extraHeader — never
       // embed a credential directly in `url` (see "Credentials" above).
-      authHeader: `Authorization: Basic ${Buffer.from(`${env.MY_FORGE_TOKEN}:`).toString("base64")}`,
+      // Check your forge's docs for which Basic-auth slot the token goes
+      // in — GitHub wants it as the password with a fixed `x-access-token`
+      // username, Gitea wants a real username plus the token as password;
+      // a bare token with no username is rejected by both for private repos.
+      authHeader: `Authorization: Basic ${Buffer.from(`${env.MY_FORGE_USERNAME}:${env.MY_FORGE_TOKEN}`).toString("base64")}`,
     }),
   };
 };
