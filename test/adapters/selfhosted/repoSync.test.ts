@@ -55,6 +55,28 @@ test("ensureLocalClone: clones when the target dir has no .git, then fetches on 
   }
 });
 
+test("ensureLocalClone: a failed clone's error never leaks the raw authHeader — Node's execFile embeds the full argv in the error message otherwise", async () => {
+  const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-clone-"));
+  const secretHeader = "Authorization: Basic dGhpcy1pcy1hLXNlY3JldC10b2tlbg==";
+  try {
+    await assert.rejects(
+      ensureLocalClone({
+        cloneDir,
+        remoteUrl: "https://127.0.0.1:1/does-not-exist.git",
+        authHeader: secretHeader,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.doesNotMatch(error.message, /dGhpcy1pcy1hLXNlY3JldC10b2tlbg==/);
+        assert.match(error.message, /\[REDACTED\]/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cloneDir, { recursive: true, force: true });
+  }
+});
+
 test("fetchBranch: pulls a branch created on the remote AFTER the initial clone", async () => {
   const { dir: remoteDir, cleanup: cleanupRemote } = await makeSourceRepo();
   const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-clone-"));

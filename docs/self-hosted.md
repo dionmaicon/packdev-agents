@@ -15,8 +15,10 @@ doc is optional tuning.
    never conflict:
    - `compat` — deterministic pass/fail verdict, can auto-merge
    - `triage` — experimental LLM advisory comment, never merges
-2. **Which forge?** Set `PROVIDER` (or `PROVIDER_MODULE` for anything not
-   built in — see below):
+2. **Which forge, and how many repos?** Set `PROVIDER` (or `PROVIDER_MODULE`
+   for anything not built in — see below), and `REPO` for one repo or
+   `REPOS` for a comma-separated list, all watched with the same
+   provider/token:
    - `github` (default) — needs `GITHUB_TOKEN`
    - `gitea` — needs `GITEA_URL` + `GITEA_TOKEN` + `GITEA_USERNAME`
 3. **How does it run?** `--once` from your own cron/systemd timer, the
@@ -29,6 +31,20 @@ npm install -g @packdev/agents
 REPO=owner/repo GITHUB_TOKEN=ghp_... TEST_COMMAND="npm test" \
   packdev-agents compat --once
 ```
+
+Same, watching a whole list of repos (one bot account, several repos it
+has access to — the common self-hosted shape, one process instead of one
+per repo):
+
+```sh
+REPOS=owner/repo-a,owner/repo-b,owner/repo-c GITHUB_TOKEN=ghp_... TEST_COMMAND="npm test" \
+  packdev-agents compat --once
+```
+
+Each repo in the list is polled and processed independently — one repo's
+API hiccup or a renamed/deleted repo doesn't stop the rest of the list
+from running that cycle (see the `REPOS` row in the reference table below
+for how clone dirs and state files stay isolated per repo).
 
 Same, but against Gitea:
 
@@ -96,23 +112,24 @@ Both subcommands:
 
 | Var | Required | Notes |
 |---|---|---|
-| `REPO` | yes | `owner/repo` |
+| `REPO` | yes, unless `REPOS` is set | `owner/repo` — one repo |
+| `REPOS` | yes, unless `REPO` is set | comma-separated `owner/repo,owner/other` — a list, same `PROVIDER`/token for every entry; mutually exclusive with `REPO`. Each repo is polled and processed independently: one repo's API failure or a renamed/deleted repo doesn't stop the rest of the list that cycle. |
 | `PROVIDER` | no | `github` (default) or `gitea` |
 | `PROVIDER_MODULE` | no | path or package specifier for a custom provider — see below. Overrides `PROVIDER` when set. |
 | `GITHUB_TOKEN` | if `PROVIDER=github` | needs `repo` scope (comment, check-run, merge) |
 | `GITEA_URL`, `GITEA_TOKEN`, `GITEA_USERNAME` | if `PROVIDER=gitea` | token needs `read:repository`, `write:repository`, `read:issue`, `write:issue` scopes; `GITEA_USERNAME` must be the token owner's username — Gitea's git-http-backend needs a real username alongside the token as password, a bare token with no username is rejected for private repos |
-| `REMOTE_URL` | no | overrides the git clone URL the provider derives by default. Credentials are never embedded in this URL either way — see "Credentials" below. |
-| `ALLOWED_ACTORS` | no | comma-separated PR author allowlist, default `dependabot[bot],renovate[bot]` |
-| `PACKAGE_JSON_PATH` | no | pin to one `package.json` in a monorepo instead of auto-discovering |
-| `CLONE_DIR` | no | default `./.packdev-agents/repo` |
+| `REMOTE_URL` | no | overrides the git clone URL the provider derives by default. **Single-`REPO` only** — rejected outright when `REPOS` has more than one entry, since one override URL can't correctly apply to every repo in a list. Credentials are never embedded in this URL either way — see "Credentials" below. |
+| `ALLOWED_ACTORS` | no | comma-separated PR author allowlist, default `dependabot[bot],renovate[bot]` — applies to every repo in a `REPOS` list |
+| `PACKAGE_JSON_PATH` | no | pin to one `package.json` in a monorepo instead of auto-discovering — applies to every repo in a `REPOS` list |
+| `CLONE_DIR` | no | single `REPO`: the clone dir itself, default `./.packdev-agents/repo`. `REPOS` list: the ROOT dir, one namespaced subdir per repo underneath, default root `./.packdev-agents/repos` |
 | `POLL_INTERVAL_SECONDS` | no | default `300`, must be a positive number (loop mode only) |
 
 `compat`-only:
 
 | Var | Required | Notes |
 |---|---|---|
-| `TEST_COMMAND` \| `TEST_SCRIPT` | yes, exactly one | prefer `TEST_SCRIPT` — see the pipeline's own doc comment for why |
-| `STATE_PATH` | no | default `./.packdev-agents/state.json` |
+| `TEST_COMMAND` \| `TEST_SCRIPT` | yes, exactly one | prefer `TEST_SCRIPT` — see the pipeline's own doc comment for why. Applies to every repo in a `REPOS` list — all repos in one list must share the same test invocation shape. |
+| `STATE_PATH` | no | single `REPO`: the state file itself, default `./.packdev-agents/state.json`. `REPOS` list: the ROOT dir, one file per repo underneath, default root `./.packdev-agents/state` |
 | `AUTO_MERGE` | no | `"true"` to merge automatically on a `PASSED` verdict, default off |
 | `TEST_COMBINED_BUMP` | no | see architecture.md — default on |
 | `BRAIN` | no | `anthropic` \| `openai-compatible`, optional failure-summary prose |
@@ -121,9 +138,15 @@ Both subcommands:
 
 | Var | Required | Notes |
 |---|---|---|
-| `TRIAGE_STATE_PATH` | no | default `./.packdev-agents/triage-state.json` — independent from `compat`'s own state |
+| `TRIAGE_STATE_PATH` | no | same single-`REPO`-vs-`REPOS`-list shape as `STATE_PATH` above — independent from `compat`'s own state either way. Default `./.packdev-agents/triage-state.json` or root `./.packdev-agents/triage-state` |
 | `MAX_TURNS` | no | agent tool-use loop cap |
 | `MODEL_PROVIDER` | no | `anthropic` (default) \| `openai-compatible` |
+
+A `REPO`/`REPOS` list can't mix providers or tokens — every repo in one
+process is watched with the same `PROVIDER`/credentials. Watching a GitHub
+repo and a Gitea repo together, or using per-repo tokens, needs two
+separate `packdev-agents` processes/containers (or a `PROVIDER_MODULE`
+that internally fans out, if you want one process for that case).
 
 Model credentials (`ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` or
 `OPENAI_COMPATIBLE_BASE_URL`/`OPENAI_COMPATIBLE_MODEL`/`OPENAI_COMPATIBLE_API_KEY`)

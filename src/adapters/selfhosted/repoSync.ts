@@ -27,6 +27,36 @@ function authArgs(authHeader: string | undefined): string[] {
   return authHeader ? ["-c", `http.extraHeader=${authHeader}`] : [];
 }
 
+/**
+ * Node's execFile rejects with an error whose `.message` embeds the FULL
+ * argv it ran (`Command failed: git -c http.extraHeader=Authorization:
+ * Basic <base64-token> clone ...`) — so a clone/fetch failure (bad repo
+ * name, network hiccup, anything) would otherwise leak the live credential
+ * straight into whatever logs the caller's `String(error)` ends up in.
+ * Strip the raw header value out of the message before it ever leaves this
+ * module; the caller still gets a real error, just without the secret.
+ */
+interface MaybeExecException {
+  message: string;
+  cmd?: string | undefined;
+}
+
+function redactAuthHeader<E>(error: E, authHeader: string | undefined): E {
+  if (!authHeader || !(error instanceof Error)) return error;
+  const withCmd = error as Error & MaybeExecException;
+  withCmd.message = withCmd.message.split(authHeader).join("[REDACTED]");
+  if (withCmd.cmd) withCmd.cmd = withCmd.cmd.split(authHeader).join("[REDACTED]");
+  return error;
+}
+
+async function runGit(args: string[], authHeader: string | undefined, options?: { cwd: string }): Promise<void> {
+  try {
+    await execFileAsync("git", args, options);
+  } catch (error) {
+    throw redactAuthHeader(error, authHeader);
+  }
+}
+
 /** Clones the target repo into cloneDir if it isn't there yet, else fetches to update it. */
 export async function ensureLocalClone(options: {
   cloneDir: string;
@@ -37,9 +67,9 @@ export async function ensureLocalClone(options: {
   const hasGitDir = await exists(path.join(options.cloneDir, ".git"));
   const extraArgs = authArgs(options.authHeader);
   if (!hasGitDir) {
-    await execFileAsync("git", [...extraArgs, "clone", options.remoteUrl, options.cloneDir]);
+    await runGit([...extraArgs, "clone", options.remoteUrl, options.cloneDir], options.authHeader);
   } else {
-    await execFileAsync("git", [...extraArgs, "fetch", "origin"], { cwd: options.cloneDir });
+    await runGit([...extraArgs, "fetch", "origin"], options.authHeader, { cwd: options.cloneDir });
   }
 }
 
@@ -53,5 +83,5 @@ export async function ensureLocalClone(options: {
  * this fetch and that read doesn't matter.
  */
 export async function fetchBranch(cloneDir: string, branch: string, authHeader?: string | undefined): Promise<void> {
-  await execFileAsync("git", [...authArgs(authHeader), "fetch", "origin", branch], { cwd: cloneDir });
+  await runGit([...authArgs(authHeader), "fetch", "origin", branch], authHeader, { cwd: cloneDir });
 }

@@ -165,3 +165,41 @@ test("compat --once: PROVIDER=gitea missing GITEA_USERNAME -> fails with a clear
   assert.equal(exitCode, 1);
   assert.match(stderr, /Missing required environment variable: GITEA_USERNAME/);
 });
+
+test("compat --once: REPO and REPOS both set -> clear mutually-exclusive error", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPO: "owner/repo",
+    REPOS: "owner/a,owner/b",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /REPO and REPOS are mutually exclusive/);
+});
+
+test("compat --once: REPOS with one entry malformed among several -> whole run fails fast, config error names it", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPOS: "owner/good,not-owner-slash-repo",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /REPO must be "owner\/repo"/);
+});
+
+test("compat --once: REPOS + REMOTE_URL together -> rejected, ambiguous which repo it applies to", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPOS: "owner/a,owner/b",
+    GITHUB_TOKEN: "fake",
+    REMOTE_URL: "https://example.test/custom.git",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /REMOTE_URL cannot be used with multiple REPOS/);
+});
+
+test("compat --once: REPOS empty after trimming -> clear error", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], {
+    REPOS: " , ,",
+    GITHUB_TOKEN: "fake",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /REPOS must contain at least one "owner\/repo"/);
+});
