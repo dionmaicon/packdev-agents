@@ -26,7 +26,7 @@ export const createGiteaProvider: ProviderFactory = (env): Provider => {
 
   return {
     createPullRequestSource: () => createGiteaPullRequestSource({ baseUrl, token, owner, repo }),
-    createForgeOpsFor: (pr) => createGiteaOps({ baseUrl, token, owner, repo, prNumber: pr.number }),
+    createForgeOpsFor: (pr) => createGiteaOps({ baseUrl, token, owner, repo, prNumber: pr.number, headSha: pr.headSha }),
     createGitRemote: () => ({
       url: `${baseUrl}/${owner}/${repo}.git`,
       // Gitea's git-http-backend authenticates like standard HTTP Basic

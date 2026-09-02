@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../core/brain.js";
 import type { CompatStepResult } from "../core/pipeline.js";
 import { resolveProvider } from "../providers/registry.js";
@@ -481,10 +482,31 @@ async function main(): Promise<void> {
   await loop.start();
 }
 
-// Only auto-run when executed directly (`node dist/cli/index.js ...`), not
-// when imported — lets tests import pure helpers above (resolveGitRemote,
-// sameHttpOrigin) without triggering a real CLI run as an import side effect.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+/**
+ * Only auto-run when executed directly (`node dist/cli/index.js ...`, or
+ * via the `packdev-agents` bin), not when imported — lets tests import
+ * pure helpers above (resolveGitRemote, sameHttpOrigin, ...) without
+ * triggering a real CLI run as an import side effect.
+ *
+ * npm's bin mechanism invokes this file through a SYMLINK
+ * (node_modules/.bin/packdev-agents -> ../@packdev/agents/dist/cli/index.js).
+ * `process.argv[1]` reports the symlink path as-typed, while
+ * `import.meta.url` is this module's own real location — a naive string
+ * comparison between the two never matches for a globally-installed or npx
+ * run, so main() would silently never execute. realpathSync() resolves
+ * both sides to the same canonical path before comparing.
+ */
+function isMainModule(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -6,6 +6,7 @@ export interface GiteaOpsConfig {
   owner: string;
   repo: string;
   prNumber: number;
+  headSha: string;
 }
 
 interface GiteaComment {
@@ -77,7 +78,7 @@ async function listAllComments(
 }
 
 export function createGiteaOps(config: GiteaOpsConfig): ForgeOps {
-  const { owner, repo, prNumber } = config;
+  const { owner, repo, prNumber, headSha } = config;
 
   return {
     async upsertComment(input: CommentInput): Promise<void> {
@@ -102,9 +103,13 @@ export function createGiteaOps(config: GiteaOpsConfig): ForgeOps {
     },
 
     async mergePullRequest(): Promise<void> {
+      // head_commit_id pins the merge to the exact head compat/triage
+      // actually tested — Gitea rejects the merge if the PR's head has
+      // moved past this commit, instead of silently merging whatever the
+      // current (possibly untested) head is.
       await giteaFetch(config, `/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
         method: "POST",
-        body: JSON.stringify({ Do: "merge" }),
+        body: JSON.stringify({ Do: "merge", head_commit_id: headSha }),
       });
     },
   };

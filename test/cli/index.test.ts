@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { symlink, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -202,4 +204,25 @@ test("compat --once: REPOS empty after trimming -> clear error", async () => {
   });
   assert.equal(exitCode, 1);
   assert.match(stderr, /REPOS must contain at least one "owner\/repo"/);
+});
+
+test("invoked through a SYMLINK (npm's actual bin mechanism) -> main() still runs, not silently a no-op", async () => {
+  // Reproduces npm's real bin layout: node_modules/.bin/packdev-agents is
+  // a symlink to dist/cli/index.js. process.argv[1] reports the symlink
+  // path as typed; import.meta.url is the real file's own location — a
+  // naive equality check between the two never matches here, which would
+  // make main() silently never execute (exit 0, no output, nothing run).
+  const symlinkDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-symlink-"));
+  const symlinkPath = path.join(symlinkDir, "packdev-agents-bin");
+  try {
+    await symlink(cliJs, symlinkPath);
+    const result = await execFileAsync("node", [symlinkPath], {
+      env: { ...process.env },
+    }).catch((error: { stdout: string; stderr: string; code: number }) => error);
+    const exitCode = "code" in result ? (result.code ?? 0) : 0;
+    assert.equal(exitCode, 1);
+    assert.match(result.stderr, /Usage: packdev-agents <compat\|triage>/);
+  } finally {
+    await rm(symlinkDir, { recursive: true, force: true });
+  }
 });

@@ -93,6 +93,43 @@ test("resolveProvider: PROVIDER_MODULE with a BARE package specifier resolves fr
   }
 });
 
+test("resolveProvider: PROVIDER_MODULE with a BARE specifier whose package.json exposes ONLY an \"import\" export condition (no \"require\"/\"main\") still resolves — require.resolve() can't see it, must fall back", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
+  const originalCwd = process.cwd();
+  try {
+    const pkgDir = path.join(projectDir, "node_modules", "esm-only-provider-pkg");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "esm-only-provider-pkg",
+        type: "module",
+        // Deliberately no top-level "main" — only an "exports" map with an
+        // "import" condition, which is exactly what require.resolve()
+        // can't see (it only understands "require"/"node"/"default").
+        exports: { ".": { import: "./entry.mjs" } },
+      }),
+    );
+    await writeFile(
+      path.join(pkgDir, "entry.mjs"),
+      `export default function createProvider() {
+        return {
+          createPullRequestSource: () => ({ listOpenBotPRs: async () => [] }),
+          createForgeOpsFor: () => ({ upsertComment: async () => {}, createCheckRun: async () => {}, mergePullRequest: async () => {} }),
+          createGitRemote: () => ({ url: "https://example.test/esm-only.git" }),
+        };
+      }\n`,
+    );
+    process.chdir(projectDir);
+
+    const provider = await resolveProvider({ PROVIDER_MODULE: "esm-only-provider-pkg" });
+    assert.equal(provider.createGitRemote().url, "https://example.test/esm-only.git");
+  } finally {
+    process.chdir(originalCwd);
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test("resolveProvider: PROVIDER_MODULE with no default export, or a non-function default -> clear error", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
   const originalCwd = process.cwd();

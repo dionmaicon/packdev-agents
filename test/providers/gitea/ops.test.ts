@@ -32,7 +32,7 @@ test("upsertComment: no existing comment with the marker -> POSTs a new comment"
   }) as typeof fetch;
 
   try {
-    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5, headSha: "abc123" });
     await ops.upsertComment({ marker: "<!-- packdev-agents -->", body: "<!-- packdev-agents -->\nverdict" });
 
     const post = calls.find((c) => c.method === "POST");
@@ -53,7 +53,7 @@ test("upsertComment: an existing comment with the marker -> PATCHes it instead o
   }) as typeof fetch;
 
   try {
-    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5, headSha: "abc123" });
     await ops.upsertComment({ marker: "<!-- packdev-agents -->", body: "<!-- packdev-agents -->\nnew" });
 
     const patch = calls.find((c) => c.method === "PATCH");
@@ -86,7 +86,7 @@ test("upsertComment: the marker comment sitting on page 2 is found and PATCHed, 
   }) as typeof fetch;
 
   try {
-    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5, headSha: "abc123" });
     await ops.upsertComment({ marker: "<!-- packdev-agents -->", body: "<!-- packdev-agents -->\nnew" });
 
     const getPages = calls.filter((c) => c.method === "GET").map((c) => new URL(c.url).searchParams.get("page"));
@@ -108,25 +108,35 @@ test("createCheckRun: no-op, Gitea has no Checks API to call", async () => {
   }) as typeof fetch;
 
   try {
-    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5, headSha: "abc123" });
     await assert.doesNotReject(ops.createCheckRun({ name: "packdev-agents", conclusion: "success", title: "t", summary: "s" }));
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("mergePullRequest: posts Gitea's own {Do: 'merge'} body shape, not GitHub's merge params", async () => {
+test("mergePullRequest: posts Gitea's own {Do: 'merge', head_commit_id} body shape, not GitHub's merge params", async () => {
   const calls: Call[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fakeFetch(calls, () => ({ status: 200, body: {} })) as typeof fetch;
 
   try {
-    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    const ops = createGiteaOps({
+      baseUrl: "https://gitea.example.com",
+      token: "t",
+      owner: "o",
+      repo: "r",
+      prNumber: 5,
+      headSha: "abc123",
+    });
     await ops.mergePullRequest();
 
     assert.equal(calls.length, 1);
     assert.match(calls[0]!.url, /\/repos\/o\/r\/pulls\/5\/merge$/);
-    assert.deepEqual(calls[0]!.body, { Do: "merge" });
+    // head_commit_id pins the merge to the exact head compat/triage tested
+    // — Gitea rejects the merge if the PR's head has moved past this
+    // commit since, instead of silently merging a newer, untested head.
+    assert.deepEqual(calls[0]!.body, { Do: "merge", head_commit_id: "abc123" });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -143,7 +153,7 @@ test("a non-ok response throws with the status and body in the message", async (
     }) as Response) as typeof fetch;
 
   try {
-    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5 });
+    const ops = createGiteaOps({ baseUrl: "https://gitea.example.com", token: "t", owner: "o", repo: "r", prNumber: 5, headSha: "abc123" });
     await assert.rejects(ops.mergePullRequest(), /403.*scope/);
   } finally {
     globalThis.fetch = originalFetch;

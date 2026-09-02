@@ -80,10 +80,16 @@ export function createOctokitOps(config: OctokitOpsConfig): ForgeOps {
     },
 
     async mergePullRequest(): Promise<void> {
+      // `sha` pins the merge to the exact head commit compat/triage
+      // actually tested — without it, GitHub merges whatever the CURRENT
+      // head is, so a push landing on the PR between the test run and
+      // this call would merge untested code. GitHub rejects the request
+      // if head has moved past this sha instead of merging silently.
       await octokit.rest.pulls.merge({
         owner,
         repo,
         pull_number: prNumber,
+        sha: headSha,
       });
     },
   };

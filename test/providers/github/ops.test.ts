@@ -42,6 +42,21 @@ test("createCheckRun: a GitHub-App-only failure (HttpError) is caught, not rethr
   );
 });
 
+test("mergePullRequest: pins the merge to the tested headSha via the sha param, so a push during the run can't merge untested code", async () => {
+  const octokit = fakeOctokit();
+  const calls: unknown[] = [];
+  octokit.rest.pulls.merge = async (params: unknown) => {
+    calls.push(params);
+    return {};
+  };
+  const ops = createOctokitOps({ octokit, owner: "o", repo: "r", prNumber: 1, headSha: "abc123" });
+
+  await ops.mergePullRequest();
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { owner: "o", repo: "r", pull_number: 1, sha: "abc123" });
+});
+
 test("upsertComment: still posts even though createCheckRun would fail — comment is the primary output, not gated on checks working", async () => {
   const created: string[] = [];
   const octokit = fakeOctokit();
