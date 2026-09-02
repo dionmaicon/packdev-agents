@@ -1,31 +1,13 @@
-import type { getOctokit } from "@actions/github";
-
-export interface OpenBotPR {
-  number: number;
-  actor: string;
-  baseBranch: string;
-  baseSha: string;
-  headBranch: string;
-  headSha: string;
-}
-
-/**
- * Where the list of open PRs comes from, kept behind an interface for the
- * same reason as pipeline.ts's GitHubOps — so poll.ts's actual polling
- * logic (which PRs are new, which are already seen) is testable without
- * hitting the GitHub API.
- */
-export interface PullRequestSource {
-  listOpenBotPRs(): Promise<OpenBotPR[]>;
-}
+import type { Octokit } from "@octokit/rest";
+import type { PullRequestSource, OpenBotPR } from "../types.js";
 
 export interface OctokitPullRequestSourceConfig {
-  octokit: ReturnType<typeof getOctokit>;
+  octokit: Octokit;
   owner: string;
   repo: string;
 }
 
-/** Real implementation. Deliberately thin — see octokitOps.ts for the same rationale. */
+/** Real implementation. Deliberately thin — see ops.ts for the same rationale. */
 export function createOctokitPullRequestSource(
   config: OctokitPullRequestSourceConfig,
 ): PullRequestSource {

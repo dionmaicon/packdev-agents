@@ -9,7 +9,7 @@ import {
   type Unsupported,
 } from "../../core/extractBump.js";
 import { prepareWorkspace } from "../../core/prepareWorkspace.js";
-import { DEFAULT_ALLOWED_ACTORS, type GitHubOps } from "../../core/pipeline.js";
+import { DEFAULT_ALLOWED_ACTORS, type ForgeOps } from "../../core/pipeline.js";
 import { runAgenticTriage, type AgenticTriageResult } from "./triage.js";
 import type { AgentLoop } from "./agentLoop.js";
 
@@ -21,7 +21,7 @@ export interface RunAgenticTriagePipelineOptions {
   baseRef: string;
   headRef: string;
   actor: string;
-  github: GitHubOps;
+  forge: ForgeOps;
   /** Which model backend drives the loop — createAnthropicAgentLoop or createOpenAiCompatibleAgentLoop. */
   agentLoop: AgentLoop;
   maxTurns?: number | undefined;
@@ -116,7 +116,7 @@ export async function runAgenticTriagePipeline(
             .join(", ")}.`
         : `${AGENTIC_TRIAGE_COMMENT_MARKER}\n### 🤖 Agentic triage — ⏭️ Skipped\n\n${bump.reason}.`;
 
-    await options.github.upsertComment({ marker: AGENTIC_TRIAGE_COMMENT_MARKER, body });
+    await options.forge.upsertComment({ marker: AGENTIC_TRIAGE_COMMENT_MARKER, body });
     return { status: "unsupported-bump", bump };
   }
 
@@ -141,8 +141,8 @@ export async function runAgenticTriagePipeline(
   }
 
   const body = `${AGENTIC_TRIAGE_COMMENT_MARKER}\n${renderTriageComment(bump, triage)}`;
-  await options.github.upsertComment({ marker: AGENTIC_TRIAGE_COMMENT_MARKER, body });
-  await options.github.createCheckRun({
+  await options.forge.upsertComment({ marker: AGENTIC_TRIAGE_COMMENT_MARKER, body });
+  await options.forge.createCheckRun({
     name: "packdev agentic triage",
     conclusion: "neutral",
     title: `${bump.name} ${bump.fromVersion} → ${bump.toVersion}: advisory triage complete`,

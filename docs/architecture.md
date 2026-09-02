@@ -194,7 +194,7 @@ file (e.g. `@nestjs/core` needing to move in both `apps/gateway` and
 real-world verified via a live PR on `packdev-demo-nestjs`). Returned as
 `CrossFileBump` (`extractBump.ts`) — architecturally different from
 `Bump.group` above: a `--group` pin works WITHIN one sandbox/app, but two
-apps are genuinely independent, so `runGithubPipeline` instead runs the
+apps are genuinely independent, so `runCompatPipeline` instead runs the
 whole static-prefilter-then-compat sequence once per affected app (all
 sharing ONE `prepareWorkspace` checkout — it always installs from the
 repo root regardless of which `packageJsonPath` is passed, so there's no
@@ -354,7 +354,7 @@ test"` (an indirection, not the app's actual script body), meant
 `TYPE_CHECK_ONLY`/`TRANSPILE_ONLY`/`PASS_WITH_NO_TESTS` could never fire —
 confirmed live: identical bump, identical app, `testCommandCaveats: []`
 with `test-command: "npm test"`, but the real `TYPE_CHECK_ONLY` caveat
-with the literal command. `runCompat`/`runGithubPipeline` now also accept
+with the literal command. `runCompat`/`runCompatPipeline` now also accept
 `testScript` (exactly one of `testCommand`/`testScript` required,
 mirroring packdev's own `--test`/`--test-script` mutual exclusivity) —
 packdev resolves the NAMED script from the target's own package.json,

@@ -11,9 +11,9 @@ import { loadSeenState } from "../../../src/adapters/selfhosted/state.ts";
 import type {
   OpenBotPR,
   PullRequestSource,
-} from "../../../src/adapters/selfhosted/discoverPRs.ts";
+} from "../../../src/providers/types.ts";
 import type {
-  GitHubOps,
+  ForgeOps,
   CommentInput,
   CheckRunInput,
 } from "../../../src/core/pipeline.ts";
@@ -81,7 +81,7 @@ function fakePRSource(prs: OpenBotPR[]): PullRequestSource {
   return { async listOpenBotPRs() { return prs; } };
 }
 
-function fakeGitHubOps(): GitHubOps & { comments: CommentInput[]; checkRuns: CheckRunInput[]; mergeCalls: number } {
+function fakeGitHubOps(): ForgeOps & { comments: CommentInput[]; checkRuns: CheckRunInput[]; mergeCalls: number } {
   const comments: CommentInput[] = [];
   const checkRuns: CheckRunInput[] = [];
   let mergeCalls = 0;
@@ -121,7 +121,7 @@ test(
         testCommand:
           'node -e "if (require(\'is-odd\')(4) !== false) process.exit(1)"',
         prSource: fakePRSource([pr]),
-        githubOpsFor: () => github,
+        forgeOpsFor: () => github,
       });
 
       assert.equal(result.processed.length, 1);
@@ -169,7 +169,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([pr]),
-        githubOpsFor: () => firstGithub,
+        forgeOpsFor: () => firstGithub,
       });
 
       const secondGithub = fakeGitHubOps();
@@ -179,7 +179,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([pr]),
-        githubOpsFor: () => secondGithub,
+        forgeOpsFor: () => secondGithub,
       });
 
       assert.equal(result.processed.length, 0);
@@ -218,7 +218,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([pr]),
-        githubOpsFor: () => fakeGitHubOps(),
+        forgeOpsFor: () => fakeGitHubOps(),
       });
 
       // Simulate Dependabot rebasing/pushing a new commit to the same PR.
@@ -237,7 +237,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([updatedPr]),
-        githubOpsFor: () => github,
+        forgeOpsFor: () => github,
       });
 
       assert.equal(result.processed.length, 1);
@@ -287,7 +287,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([brokenPr, goodPr]),
-        githubOpsFor: () => github,
+        forgeOpsFor: () => github,
       });
 
       assert.equal(result.failed.length, 1);
@@ -332,7 +332,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([firstPr]),
-        githubOpsFor: () => fakeGitHubOps(),
+        forgeOpsFor: () => fakeGitHubOps(),
       });
       const stateAfterCycle1 = await loadSeenState(statePath);
       assert.equal(stateAfterCycle1["7"], headSha);
@@ -369,7 +369,7 @@ test(
           statePath,
           testCommand: "true",
           prSource: fakePRSource([secondPr]),
-          githubOpsFor: () => github,
+          forgeOpsFor: () => github,
         });
       } finally {
         await chmod(statePath, 0o644); // restore so cleanup/rm can delete it
@@ -380,7 +380,7 @@ test(
       assert.equal(
         result.processed.length,
         0,
-        "must not appear in `processed` when its own save failed, even though runGithubPipeline itself succeeded",
+        "must not appear in `processed` when its own save failed, even though runCompatPipeline itself succeeded",
       );
 
       // The on-disk state must still show ONLY PR #7 -- unchanged by the
@@ -421,7 +421,7 @@ test(
         statePath,
         testCommand: "true",
         prSource: fakePRSource([pr]),
-        githubOpsFor: () => github,
+        forgeOpsFor: () => github,
       });
 
       assert.equal(result.processed.length, 0);

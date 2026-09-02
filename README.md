@@ -53,8 +53,10 @@ gate a merge.
 - **GitHub mode** — ships as a reusable GitHub Action. Zero infra for the
   user beyond a workflow file and an LLM API key.
 - **Self-hosted mode** — runs on the user's own infra (local model, no data
-  leaves their network). Starts with polling (zero infra); a hosted
-  webhook relay is a possible v2.
+  leaves their network), against GitHub, Gitea, or a custom forge via a
+  small plugin — no GitHub dependency at runtime. Ships as the
+  `@packdev/agents` npm package (`packdev-agents compat|triage`) or a
+  Docker image. See `docs/self-hosted.md`.
 
 See `docs/use-cases.md` for details.
 

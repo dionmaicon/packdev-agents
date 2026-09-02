@@ -55,6 +55,75 @@ test("ensureLocalClone: clones when the target dir has no .git, then fetches on 
   }
 });
 
+test("ensureLocalClone: a failed clone's error never leaks the raw authHeader — the credential is passed via env, not argv, so it can't show up in a process listing or an execFile error's cmd/message", async () => {
+  const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-clone-"));
+  const secretHeader = "Authorization: Basic dGhpcy1pcy1hLXNlY3JldC10b2tlbg==";
+  try {
+    await assert.rejects(
+      ensureLocalClone({
+        cloneDir,
+        remoteUrl: "https://127.0.0.1:1/does-not-exist.git",
+        authHeader: secretHeader,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.doesNotMatch(error.message, /dGhpcy1pcy1hLXNlY3JldC10b2tlbg==/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(cloneDir, { recursive: true, force: true });
+  }
+});
+
+test("ensureLocalClone: authHeader is applied via GIT_CONFIG_* env vars, not -c on argv", async () => {
+  const { dir: remoteDir, cleanup: cleanupRemote } = await makeSourceRepo();
+  const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-clone-"));
+  try {
+    // A real header value that git's http.extraHeader would reject if it
+    // were ever actually sent (this remote is a local file path, not
+    // HTTP) — if authEnv's GIT_CONFIG_* wiring were broken (e.g. env not
+    // merged with process.env, breaking PATH lookup of git itself), this
+    // clone would fail outright rather than silently ignoring the header.
+    await ensureLocalClone({
+      cloneDir,
+      remoteUrl: remoteDir,
+      authHeader: "Authorization: Basic Zm9vOmJhcg==",
+    });
+    const head = await git(cloneDir, ["rev-parse", "HEAD"]);
+    const remoteHead = await git(remoteDir, ["rev-parse", "HEAD"]);
+    assert.equal(head, remoteHead);
+  } finally {
+    await cleanupRemote();
+    await rm(cloneDir, { recursive: true, force: true });
+  }
+});
+
+test("ensureLocalClone: an existing clone with a STALE origin gets reset to remoteUrl before fetching, instead of fetching from the old host", async () => {
+  const { dir: remoteA, cleanup: cleanupA } = await makeSourceRepo();
+  const { dir: remoteB, cleanup: cleanupB } = await makeSourceRepo();
+  const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-clone-"));
+  try {
+    await ensureLocalClone({ cloneDir, remoteUrl: remoteA });
+    const originAfterFirstClone = await git(cloneDir, ["remote", "get-url", "origin"]);
+    assert.equal(originAfterFirstClone, remoteA);
+
+    // Simulate REPO/PROVIDER changing between cycles while CLONE_DIR is
+    // reused — the real-world scenario this guards against.
+    await ensureLocalClone({ cloneDir, remoteUrl: remoteB });
+    const originAfterSecondClone = await git(cloneDir, ["remote", "get-url", "origin"]);
+    assert.equal(originAfterSecondClone, remoteB);
+
+    const headAfterSecondClone = await git(cloneDir, ["rev-parse", "refs/remotes/origin/main"]);
+    const remoteBHead = await git(remoteB, ["rev-parse", "HEAD"]);
+    assert.equal(headAfterSecondClone, remoteBHead);
+  } finally {
+    await cleanupA();
+    await cleanupB();
+    await rm(cloneDir, { recursive: true, force: true });
+  }
+});
+
 test("fetchBranch: pulls a branch created on the remote AFTER the initial clone", async () => {
   const { dir: remoteDir, cleanup: cleanupRemote } = await makeSourceRepo();
   const cloneDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-clone-"));

@@ -1,8 +1,9 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import type { Octokit } from "@octokit/rest";
 
 import { runAgenticTriagePipeline } from "./pipeline.js";
-import { createOctokitOps } from "../shared/octokitOps.js";
+import { createOctokitOps } from "../../providers/github/ops.js";
 import { createAnthropicAgentLoop, createOpenAiCompatibleAgentLoop, type AgentLoop } from "./agentLoop.js";
 
 /** Mirrors github-action/main.ts's buildBrain() selector — same "one interface, pick a backend by input" shape. */
@@ -64,7 +65,8 @@ async function run(): Promise<void> {
   const maxTurnsInput = core.getInput("max-turns");
   const maxTurns = maxTurnsInput ? Number(maxTurnsInput) : undefined;
 
-  const octokit = github.getOctokit(token);
+  // See github-action/main.ts's identical cast for why this is needed.
+  const octokit = github.getOctokit(token) as unknown as Octokit;
   const { owner, repo } = github.context.repo;
 
   const githubOps = createOctokitOps({
@@ -80,7 +82,7 @@ async function run(): Promise<void> {
     baseRef: pr.base.sha,
     headRef: pr.head.sha,
     actor: pr.user.login,
-    github: githubOps,
+    forge: githubOps,
     agentLoop: buildAgentLoop(),
     allowedActors,
     ...(maxTurns ? { maxTurns } : {}),

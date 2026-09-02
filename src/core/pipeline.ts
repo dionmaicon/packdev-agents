@@ -37,13 +37,14 @@ export interface CheckRunInput {
 }
 
 /**
- * Everything that actually talks to GitHub, behind one small interface —
- * kept separate from the pipeline logic so the pipeline can be tested
- * against a real git repo and a real packdev run without any GitHub API
- * access. See src/adapters/shared/octokitOps.ts for the real
- * implementation and main.ts for how it's wired up.
+ * Everything that actually talks to the forge (GitHub, Gitea, or any other
+ * provider implementing this interface), behind one small interface — kept
+ * separate from the pipeline logic so the pipeline can be tested against a
+ * real git repo and a real packdev run without hitting any forge's API.
+ * See src/providers/<name>/ops.ts for the real implementations and
+ * src/providers/registry.ts for how a provider is selected at runtime.
  */
-export interface GitHubOps {
+export interface ForgeOps {
   upsertComment(input: CommentInput): Promise<void>;
   createCheckRun(input: CheckRunInput): Promise<void>;
   mergePullRequest(): Promise<void>;
@@ -51,7 +52,7 @@ export interface GitHubOps {
 
 export const COMMENT_MARKER = "<!-- packdev-agents:compat-check -->";
 
-export interface RunGithubPipelineOptions {
+export interface RunCompatPipelineOptions {
   /** A git checkout containing both baseRef and headRef. */
   repoDir: string;
   baseRef: string;
@@ -68,7 +69,7 @@ export interface RunGithubPipelineOptions {
    */
   testCommand?: string | undefined;
   testScript?: string | undefined;
-  github: GitHubOps;
+  forge: ForgeOps;
   /**
    * Optional, and usually not needed: an explicit override narrowing
    * extractBump to ONE specific package.json, relative to repoDir. Without
@@ -120,7 +121,7 @@ export type CompatStepResult =
   | { kind: "static-incompatible"; apiDiff: ApiDiffReport }
   | { kind: "verdict"; verdict: Verdict };
 
-export type RunGithubPipelineResult =
+export type RunCompatPipelineResult =
   | { status: "skipped-actor"; actor: string }
   | { status: "unsupported-bump"; bump: Unsupported }
   | { status: "static-incompatible"; bump: Bump; apiDiff: ApiDiffReport }
@@ -231,7 +232,7 @@ export function isConfidentStaticRegression(
 
 /**
  * The static-prefilter-then-compat logic for ONE bump against an already-
- * prepared app directory. Pulled out of runGithubPipeline so a cross-file
+ * prepared app directory. Pulled out of runCompatPipeline so a cross-file
  * bump (the SAME package bumped in multiple independent apps — see
  * extractBump.ts's CrossFileBump) can run this once per affected app
  * within a single shared workspace checkout, instead of duplicating the
@@ -328,7 +329,7 @@ function renderCombined(combined: CombinedResult): string {
  * structurally cannot see.
  */
 async function runIndependentBumpsStep(
-  options: RunGithubPipelineOptions,
+  options: RunCompatPipelineOptions,
   bumpResult: IndependentBumps,
 ): Promise<{ results: Array<{ bump: Bump; step: CompatStepResult }>; combined: CombinedResult }> {
   const workspace = await prepareWorkspace({
@@ -378,17 +379,18 @@ async function runIndependentBumpsStep(
 /**
  * Runs the full core pipeline (extractBump -> prepareWorkspace -> runCompat
  * -> interpret -> render) against a prepared git checkout and reports the
- * result through the injected GitHubOps. This is the GitHub Action's real
- * logic; main.ts is just environment/input plumbing around this function.
+ * result through the injected ForgeOps. Shared by every adapter (GitHub
+ * Action, self-hosted CLI against any provider) — each adapter is just
+ * environment/input plumbing around this function.
  */
-export async function runGithubPipeline(
-  options: RunGithubPipelineOptions,
-): Promise<RunGithubPipelineResult> {
+export async function runCompatPipeline(
+  options: RunCompatPipelineOptions,
+): Promise<RunCompatPipelineResult> {
   if (!options.testCommand && !options.testScript) {
-    throw new Error("runGithubPipeline: exactly one of testCommand/testScript is required, got neither");
+    throw new Error("runCompatPipeline: exactly one of testCommand/testScript is required, got neither");
   }
   if (options.testCommand && options.testScript) {
-    throw new Error("runGithubPipeline: testCommand and testScript are mutually exclusive, got both");
+    throw new Error("runCompatPipeline: testCommand and testScript are mutually exclusive, got both");
   }
 
   const allowedActors = options.allowedActors ?? DEFAULT_ALLOWED_ACTORS;
@@ -411,8 +413,8 @@ export async function runGithubPipeline(
             .join(", ")}.\n\nNot supported in v1 — this PR bumps more than one package, and guessing which one to test would produce a verdict that doesn't answer the PR.`
         : `${COMMENT_MARKER}\n### packdev compat — ⏭️ Skipped\n\n${bumpResult.reason}.`;
 
-    await options.github.upsertComment({ marker: COMMENT_MARKER, body });
-    await options.github.createCheckRun({
+    await options.forge.upsertComment({ marker: COMMENT_MARKER, body });
+    await options.forge.createCheckRun({
       name: "packdev compat",
       conclusion: "neutral",
       title: "Skipped — unsupported bump shape",
@@ -459,9 +461,9 @@ export async function runGithubPipeline(
     }
     const body = `${COMMENT_MARKER}\n${lines.join("\n")}`;
 
-    await options.github.upsertComment({ marker: COMMENT_MARKER, body });
+    await options.forge.upsertComment({ marker: COMMENT_MARKER, body });
     const conclusion = checkConclusionForCrossFile(results);
-    await options.github.createCheckRun({
+    await options.forge.createCheckRun({
       name: "packdev compat",
       conclusion,
       title: `${bumpResult.name} ${bumpResult.toVersion}: ${results.length} apps, ${conclusion}`,
@@ -474,7 +476,7 @@ export async function runGithubPipeline(
     const allPassed = results.every((r) => r.step.kind === "verdict" && isAutoMergeEligible(r.step.verdict));
     let merged = false;
     if (options.autoMerge && allPassed) {
-      await options.github.mergePullRequest();
+      await options.forge.mergePullRequest();
       merged = true;
     }
 
@@ -501,11 +503,11 @@ export async function runGithubPipeline(
     lines.push(renderCombined(combined));
     const body = `${COMMENT_MARKER}\n${lines.join("\n")}`;
 
-    await options.github.upsertComment({ marker: COMMENT_MARKER, body });
+    await options.forge.upsertComment({ marker: COMMENT_MARKER, body });
 
     const conclusion = checkConclusionForIndependent(results, combined);
 
-    await options.github.createCheckRun({
+    await options.forge.createCheckRun({
       name: "packdev compat",
       conclusion,
       title: `${results.length} differing-version bumps: ${conclusion}`,
@@ -520,7 +522,7 @@ export async function runGithubPipeline(
     const combinedOk = combined.kind !== "failed" && combined.kind !== "error";
     let merged = false;
     if (options.autoMerge && allIsolatedPassed && combinedOk) {
-      await options.github.mergePullRequest();
+      await options.forge.mergePullRequest();
       merged = true;
     }
 
@@ -559,8 +561,8 @@ export async function runGithubPipeline(
     const body = renderStaticIncompatible(bump, stepResult.apiDiff);
     const commentBody = `${COMMENT_MARKER}\n${body}`;
 
-    await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
-    await options.github.createCheckRun({
+    await options.forge.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
+    await options.forge.createCheckRun({
       name: "packdev compat",
       conclusion: "failure",
       title: `${bump.name} ${bump.fromVersion} → ${bump.toVersion}: STATIC_INCOMPATIBLE`,
@@ -574,8 +576,8 @@ export async function runGithubPipeline(
   const body = await renderWithBrain(verdict, options.brain);
   const commentBody = `${COMMENT_MARKER}\n${body}`;
 
-  await options.github.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
-  await options.github.createCheckRun({
+  await options.forge.upsertComment({ marker: COMMENT_MARKER, body: commentBody });
+  await options.forge.createCheckRun({
     name: "packdev compat",
     conclusion: checkConclusionFor(verdict),
     title: checkTitleFor(verdict, bump),
@@ -584,7 +586,7 @@ export async function runGithubPipeline(
 
   let merged = false;
   if (options.autoMerge && isAutoMergeEligible(verdict)) {
-    await options.github.mergePullRequest();
+    await options.forge.mergePullRequest();
     merged = true;
   }
 

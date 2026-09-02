@@ -1,0 +1,107 @@
+name: Release
+
+# Triggered on a version tag push (e.g. `git tag v0.2.0 && git push --tags`)
+# — never on plain pushes/PRs, so this never runs by accident on a normal
+# commit. Publishes @packdev/agents to npm and pushes the Docker image to
+# BOTH ghcr.io and Docker Hub from the same build.
+#
+# Requires three repo secrets that don't exist yet and must be added by
+# hand before this workflow can actually publish anything (it will build
+# and test fine either way, only the publish/push steps fail without
+# them):
+#   NPM_TOKEN                 npm token with publish rights on the `packdev` org/scope
+#   DOCKERHUB_USERNAME        Docker Hub username
+#   DOCKERHUB_TOKEN           Docker Hub access token (not your password)
+#
+# ghcr.io uses the automatic GITHUB_TOKEN — no extra secret needed — but
+# the package's visibility must be set to public once by hand after the
+# first push (GHCR packages default to private even in a public repo).
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable && corepack prepare pnpm@latest --activate
+      - run: npm ci
+      - run: npm test
+
+  verify-version:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Tag v$tag_version does not match package.json version $pkg_version" >&2
+            exit 1
+          fi
+
+  publish-npm:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm ci
+      - run: npm run build
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-docker:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/packdev-agents:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/packdev-agents:latest
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/packdev-agents:${{ steps.version.outputs.value }}
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/packdev-agents:latest
