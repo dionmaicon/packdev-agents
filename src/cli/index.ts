@@ -3,7 +3,7 @@ import path from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createAnthropicBrain, createOpenAiCompatibleBrain, type Brain } from "../core/brain.js";
-import type { CompatStepResult } from "../core/pipeline.js";
+import { DEFAULT_ALLOWED_ACTORS, type CompatStepResult } from "../core/pipeline.js";
 import { resolveProvider } from "../providers/registry.js";
 import type { Provider } from "../providers/types.js";
 import { pollOnce, type PollResult } from "../adapters/selfhosted/poll.js";
@@ -78,12 +78,27 @@ function buildAgentLoop(): AgentLoop {
   }
 }
 
+/**
+ * Gitea's PR-author field has no bot-suffix convention — a Renovate PR on
+ * Gitea shows up as actor "renovate", not GitHub's "renovate[bot]" — so
+ * the shared DEFAULT_ALLOWED_ACTORS (core/pipeline.ts, deliberately
+ * GitHub-shaped and not broadened, since it doubles as an auto-merge
+ * gate) would silently filter out every Renovate PR on a Gitea repo with
+ * no ALLOWED_ACTORS override. Only applied when ALLOWED_ACTORS is unset
+ * AND PROVIDER=gitea — an explicit ALLOWED_ACTORS always wins, and a
+ * PROVIDER_MODULE's own actor-naming convention is unknowable here, so it
+ * gets the plain GitHub-shaped default like anything else unrecognized.
+ */
+const GITEA_DEFAULT_ALLOWED_ACTORS = [...DEFAULT_ALLOWED_ACTORS, "renovate"];
+
 /** Shared by both subcommands — no test-execution config here, see readTestConfig(), which only `compat` actually needs. CLONE_DIR/STATE_PATH are resolved per repo, see resolveRepoPaths(). */
-function readCommonEnv() {
+export function readCommonEnv() {
   const allowedActorsInput = env("ALLOWED_ACTORS");
   const allowedActors = allowedActorsInput
     ? allowedActorsInput.split(",").map((s) => s.trim()).filter(Boolean)
-    : undefined;
+    : env("PROVIDER") === "gitea"
+      ? GITEA_DEFAULT_ALLOWED_ACTORS
+      : undefined;
 
   return {
     allowedActors,
@@ -114,9 +129,18 @@ export function readRepoList(): string[] {
   throw new Error("Missing required environment variable: REPO (or REPOS for a comma-separated list)");
 }
 
-/** Turns "owner/repo" into a filesystem-safe path segment. */
+/**
+ * Turns "owner/repo" into a filesystem-safe path segment. Must be
+ * INJECTIVE, not just filesystem-safe — a lossy scheme like replacing
+ * every non-alphanumeric character with "_" collides "a/b_c" and "a_b/c"
+ * onto the same segment, which would make those two repos in a REPOS list
+ * silently share a clone dir and state file (state.ts keys seen-state by
+ * PR number alone, so that's not just clutter, it's cross-repo state
+ * corruption). base64url of the full string is injective and uses only
+ * filesystem-safe characters (A-Z a-z 0-9 - _), no collision possible.
+ */
 export function repoPathSegment(repo: string): string {
-  return repo.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return Buffer.from(repo, "utf8").toString("base64url");
 }
 
 interface RepoPaths {
@@ -426,7 +450,10 @@ Env vars (both subcommands):
                     provider module (overrides PROVIDER) — see docs/self-hosted.md
   GITHUB_TOKEN      required when PROVIDER=github
   GITEA_URL, GITEA_TOKEN, GITEA_USERNAME   required when PROVIDER=gitea
-  ALLOWED_ACTORS, PACKAGE_JSON_PATH, POLL_INTERVAL_SECONDS   optional
+  ALLOWED_ACTORS    optional, default "dependabot[bot],renovate[bot]"
+                    (PROVIDER=gitea also allows "renovate" — Gitea's actor
+                    field has no [bot] suffix convention)
+  PACKAGE_JSON_PATH, POLL_INTERVAL_SECONDS   optional
                     (POLL_INTERVAL_SECONDS must be a positive number; only used without --once)
   CLONE_DIR         optional — one repo: the clone dir itself (default ./.packdev-agents/repo).
                     REPOS list: the root dir, namespaced one subdir per repo

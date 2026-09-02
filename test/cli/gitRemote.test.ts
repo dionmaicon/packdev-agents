@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
-import { resolveGitRemote, sameHttpOrigin, readRepoList, repoPathSegment, resolveRepoPaths } from "../../src/cli/index.ts";
+import { resolveGitRemote, sameHttpOrigin, readRepoList, repoPathSegment, resolveRepoPaths, readCommonEnv } from "../../src/cli/index.ts";
 
 test("sameHttpOrigin: identical protocol+host -> true, even with different paths", () => {
   assert.equal(sameHttpOrigin("https://github.com/a/b.git", "https://github.com/c/d.git"), true);
@@ -98,9 +99,20 @@ test("readRepoList: REPOS all-commas -> throws instead of returning an empty lis
   });
 });
 
-test("repoPathSegment: sanitizes slashes and other punctuation to underscores", () => {
-  assert.equal(repoPathSegment("owner/repo"), "owner_repo");
-  assert.equal(repoPathSegment("my-org/my.repo_name"), "my-org_my.repo_name");
+test("repoPathSegment: filesystem-safe (base64url alphabet only)", () => {
+  assert.match(repoPathSegment("owner/repo"), /^[A-Za-z0-9_-]+$/);
+  assert.match(repoPathSegment("my-org/my.repo_name"), /^[A-Za-z0-9_-]+$/);
+});
+
+test("repoPathSegment: injective — round-trips back to the original repo string", () => {
+  for (const repo of ["owner/repo", "my-org/my.repo_name", "a/b_c", "a_b/c"]) {
+    const segment = repoPathSegment(repo);
+    assert.equal(Buffer.from(segment, "base64url").toString("utf8"), repo);
+  }
+});
+
+test("repoPathSegment: the real collision a naive '_'-replacement sanitizer hits — \"a/b_c\" and \"a_b/c\" must NOT produce the same segment", () => {
+  assert.notEqual(repoPathSegment("a/b_c"), repoPathSegment("a_b/c"));
 });
 
 test("resolveRepoPaths: single repo -> flat single-repo defaults, ignores multi defaults", () => {
@@ -129,8 +141,23 @@ test("resolveRepoPaths: multiple repos -> each gets its own namespaced subdir/fi
   const b = paths.get("owner/b")!;
   assert.notEqual(a.cloneDir, b.cloneDir);
   assert.notEqual(a.statePath, b.statePath);
-  assert.match(a.cloneDir, /\.packdev-agents\/repos\/owner_a$/);
-  assert.match(a.statePath, /\.packdev-agents\/state\/owner_a\.json$/);
+  const segment = repoPathSegment("owner/a");
+  assert.equal(a.cloneDir, path.join("./.packdev-agents/repos", segment));
+  assert.equal(a.statePath, path.join("./.packdev-agents/state", `${segment}.json`));
+});
+
+test("resolveRepoPaths: colliding-under-naive-sanitization repos get DISTINCT paths", () => {
+  const paths = resolveRepoPaths(
+    ["a/b_c", "a_b/c"],
+    undefined,
+    undefined,
+    { cloneDir: "./.packdev-agents/repo", statePath: "./.packdev-agents/state.json" },
+    { cloneDir: "./.packdev-agents/repos", statePath: "./.packdev-agents/state" },
+  );
+  const first = paths.get("a/b_c")!;
+  const second = paths.get("a_b/c")!;
+  assert.notEqual(first.cloneDir, second.cloneDir);
+  assert.notEqual(first.statePath, second.statePath);
 });
 
 test("resolveRepoPaths: multiple repos with explicit CLONE_DIR/STATE_PATH -> treated as roots, not literal paths", () => {
@@ -141,8 +168,31 @@ test("resolveRepoPaths: multiple repos with explicit CLONE_DIR/STATE_PATH -> tre
     { cloneDir: "./.packdev-agents/repo", statePath: "./.packdev-agents/state.json" },
     { cloneDir: "./.packdev-agents/repos", statePath: "./.packdev-agents/state" },
   );
+  const segment = repoPathSegment("owner/a");
   assert.deepEqual(paths.get("owner/a"), {
-    cloneDir: "/data/clones/owner_a",
-    statePath: "/data/state/owner_a.json",
+    cloneDir: `/data/clones/${segment}`,
+    statePath: `/data/state/${segment}.json`,
+  });
+});
+
+test("readCommonEnv: PROVIDER=github, no ALLOWED_ACTORS -> falls through to core's plain default (undefined here, resolved downstream)", () => {
+  withEnv({ ALLOWED_ACTORS: undefined, PROVIDER: "github" }, () => {
+    assert.equal(readCommonEnv().allowedActors, undefined);
+  });
+});
+
+test("readCommonEnv: PROVIDER=gitea, no ALLOWED_ACTORS -> defaults ALSO include bare \"renovate\" (Gitea's actor field has no [bot] suffix)", () => {
+  withEnv({ ALLOWED_ACTORS: undefined, PROVIDER: "gitea" }, () => {
+    const actors = readCommonEnv().allowedActors;
+    assert.ok(actors);
+    assert.ok(actors!.includes("dependabot[bot]"));
+    assert.ok(actors!.includes("renovate[bot]"));
+    assert.ok(actors!.includes("renovate"));
+  });
+});
+
+test("readCommonEnv: PROVIDER=gitea WITH an explicit ALLOWED_ACTORS -> the explicit value wins, no bare \"renovate\" silently added", () => {
+  withEnv({ ALLOWED_ACTORS: "dionmaicon", PROVIDER: "gitea" }, () => {
+    assert.deepEqual(readCommonEnv().allowedActors, ["dionmaicon"]);
   });
 });

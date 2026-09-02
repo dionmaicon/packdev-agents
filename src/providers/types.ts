@@ -24,10 +24,12 @@ export interface GitRemote {
   url: string;
   /**
    * "Authorization: <scheme> <value>", applied per git invocation via
-   * `-c http.extraHeader` (see repoSync.ts) rather than embedded in `url`
-   * — embedding a token in the remote URL persists it in plaintext to
-   * `.git/config` in the clone dir for as long as that dir exists.
-   * Undefined for a provider/URL that needs no auth (e.g. a public repo).
+   * GIT_CONFIG_COUNT/KEY/VALUE env vars (see repoSync.ts's authEnv) rather
+   * than embedded in `url` — embedding a token in the remote URL persists
+   * it in plaintext to `.git/config` in the clone dir for as long as that
+   * dir exists, and passing it via `-c` on argv would expose it to any
+   * local process listing for as long as the git child runs. Undefined
+   * for a provider/URL that needs no auth (e.g. a public repo).
    */
   authHeader?: string | undefined;
 }

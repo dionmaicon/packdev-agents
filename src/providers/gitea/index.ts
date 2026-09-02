@@ -20,7 +20,11 @@ function parseRepo(env: NodeJS.ProcessEnv): { owner: string; repo: string } {
 /** Built-in "gitea" provider — see registry.ts for how PROVIDER selects this. */
 export const createGiteaProvider: ProviderFactory = (env): Provider => {
   const { owner, repo } = parseRepo(env);
-  const baseUrl = requireEnv(env, "GITEA_URL");
+  // A trailing slash (a common way to write a base URL, e.g.
+  // "https://gitea.example.com/") would otherwise produce "//api/v1" and a
+  // double-slash clone URL — some servers redirect that, and a redirect
+  // silently downgrades a POST/PATCH to a GET, breaking comments/merges.
+  const baseUrl = requireEnv(env, "GITEA_URL").replace(/\/+$/, "");
   const token = requireEnv(env, "GITEA_TOKEN");
   const username = requireEnv(env, "GITEA_USERNAME");
 
