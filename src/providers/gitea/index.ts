@@ -1,6 +1,25 @@
+import crypto from "node:crypto";
+
 import type { Provider, ProviderFactory } from "../types.js";
 import { createGiteaOps } from "./ops.js";
 import { createGiteaPullRequestSource } from "./discoverPRs.js";
+
+function verifyGiteaWebhookSignature(
+  env: NodeJS.ProcessEnv,
+  rawBody: Buffer,
+  headers: NodeJS.Dict<string | string[]>,
+): boolean {
+  const secret = env["GITEA_WEBHOOK_SECRET"];
+  if (!secret) return false;
+  const header = headers["x-gitea-signature"];
+  const signatureHeader = Array.isArray(header) ? header[0] : header;
+  if (!signatureHeader) return false;
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const expectedBuf = Buffer.from(expected, "hex");
+  const providedBuf = Buffer.from(signatureHeader, "hex");
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -41,5 +60,6 @@ export const createGiteaProvider: ProviderFactory = (env): Provider => {
       // doc comment in providers/types.ts.
       authHeader: `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`,
     }),
+    verifyWebhookSignature: (rawBody, headers) => verifyGiteaWebhookSignature(env, rawBody, headers),
   };
 };

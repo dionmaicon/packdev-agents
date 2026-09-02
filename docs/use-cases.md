@@ -58,6 +58,20 @@ assume inbound connectivity. Two options, in order of rollout priority:
 - **Who it's for**: privacy-sensitive orgs, cost-sensitive users avoiding
   per-call API fees, air-gapped/regulated environments.
 
+### 2c. Direct webhook (self-hosted, no relay — shipped, see `docs/self-hosted.md`)
+
+- The user's own box has a reachable endpoint (own VPS, home box with port
+  forwarding, or a local box exposed via their own tunnel of choice for
+  testing) — `packdev-agents compat --webhook` listens directly, no
+  third-party-operated infra involved, distinct from 2b above (no shared
+  relay, no outbound-connection trick — the box just receives the webhook).
+- On a signed `pull_request`-shaped webhook for a configured repo: verify
+  the signature via the resolved provider (GitHub HMAC/`x-hub-signature-256`
+  or Gitea HMAC/`x-gitea-signature`), then run the same compat/triage cycle
+  as polling mode — instant instead of waiting out `POLL_INTERVAL_SECONDS`.
+- Ships in the same `@packdev/agents` package/image as polling — no new
+  infra to operate, just a different trigger for the identical pipeline.
+
 ## Shared core
 
 Both modes run the same underlying work — packdev compat testing inside a

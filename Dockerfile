@@ -23,6 +23,13 @@ COPY package.json package-lock.json ./
 # artifact that ships here, not just for the source code's import graph.
 RUN npm ci --omit=dev --omit=optional
 COPY --from=build /app/dist ./dist
+# Optional: a generic tunnel launcher for exposing --webhook mode during
+# local testing (ngrok/cloudflared/...). No tunnel binary is bundled here —
+# run this via a separate `docker run --entrypoint scripts/tunnel.sh` with
+# your own tool mounted/installed and TUNNEL_COMMAND set. See
+# docs/self-hosted.md.
+COPY scripts/tunnel.sh ./scripts/tunnel.sh
+RUN chmod +x ./scripts/tunnel.sh
 RUN addgroup -S packdev && adduser -S packdev -G packdev \
     && mkdir -p /app/.packdev-agents && chown -R packdev:packdev /app
 USER packdev

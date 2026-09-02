@@ -1,8 +1,28 @@
+import crypto from "node:crypto";
+
 import { Octokit } from "@octokit/rest";
 
 import type { Provider, ProviderFactory } from "../types.js";
 import { createOctokitOps } from "./ops.js";
 import { createOctokitPullRequestSource } from "./discoverPRs.js";
+
+function verifyGithubWebhookSignature(
+  env: NodeJS.ProcessEnv,
+  rawBody: Buffer,
+  headers: NodeJS.Dict<string | string[]>,
+): boolean {
+  const secret = env["GITHUB_WEBHOOK_SECRET"];
+  if (!secret) return false;
+  const header = headers["x-hub-signature-256"];
+  const signatureHeader = Array.isArray(header) ? header[0] : header;
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const provided = signatureHeader.slice("sha256=".length);
+  const expectedBuf = Buffer.from(expected, "hex");
+  const providedBuf = Buffer.from(provided, "hex");
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -38,5 +58,6 @@ export const createGithubProvider: ProviderFactory = (env): Provider => {
       // doc comment in providers/types.ts.
       authHeader: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`,
     }),
+    verifyWebhookSignature: (rawBody, headers) => verifyGithubWebhookSignature(env, rawBody, headers),
   };
 };
