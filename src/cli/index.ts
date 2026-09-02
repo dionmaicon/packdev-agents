@@ -256,6 +256,27 @@ export async function resolveProvidersForRepos(repos: string[]): Promise<Map<str
   return providers;
 }
 
+/**
+ * runCompatForRepo/runTriageForRepo already catch their own failures and
+ * report them in the returned RepoRunOutcome (ok:false, or a populated
+ * result.failed) rather than throwing — the --once/loop callers only log
+ * that outcome. The webhook path's run() callback needs the OPPOSITE
+ * behavior: it must throw on either failure shape, because
+ * createWebhookServer's coalescer only retries a run that rejects. Without
+ * this, a transient clone/forge failure during --webhook mode would be
+ * swallowed silently (already logged once by runCompatForRepo, but never
+ * retried) instead of triggering the bounded backoff retry.
+ */
+export function throwOnRunFailure<T extends { failed: unknown[] }>(outcome: RepoRunOutcome<T>): void {
+  if (!outcome.ok) {
+    throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error));
+  }
+  const failedCount = outcome.result?.failed.length ?? 0;
+  if (failedCount > 0) {
+    throw new Error(`[${outcome.repo}] ${failedCount} PR(s) failed this cycle`);
+  }
+}
+
 export interface RepoRunOutcome<T extends { failed: unknown[] }> {
   repo: string;
   ok: boolean;
@@ -542,7 +563,7 @@ async function buildCompatWebhookServer(): Promise<WebhookServer> {
     repoEntries.set(repo, {
       provider,
       run: async () => {
-        await runCompatForRepo(repo, provider, cloneDir, statePath, ctx);
+        throwOnRunFailure(await runCompatForRepo(repo, provider, cloneDir, statePath, ctx));
       },
     });
   }
@@ -578,7 +599,7 @@ async function buildTriageWebhookServer(): Promise<WebhookServer> {
     repoEntries.set(repo, {
       provider,
       run: async () => {
-        await runTriageForRepo(repo, provider, cloneDir, statePath, ctx);
+        throwOnRunFailure(await runTriageForRepo(repo, provider, cloneDir, statePath, ctx));
       },
     });
   }

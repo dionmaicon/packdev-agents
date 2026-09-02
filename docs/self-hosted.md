@@ -210,11 +210,15 @@ the binary on top of this one, then point `entrypoint` at the script
 instead of a separate tool image:
 
 ```dockerfile
-# Dockerfile.tunnel — adds ngrok to this image, kept as a separate service
+# Dockerfile.tunnel — adds ngrok to this image, kept as a separate service.
+# Copies the binary out of ngrok's own official, signed image instead of
+# piping an arbitrary URL through curl into tar as root — a compromised or
+# MITM'd download at build time would otherwise run as root with no
+# checksum/signature check at all.
+FROM ngrok/ngrok:latest AS ngrok
 FROM packdev-agents:local
 USER root
-RUN apk add --no-cache curl \
-    && curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C /usr/local/bin
+COPY --from=ngrok /bin/ngrok /usr/local/bin/ngrok
 USER packdev
 ENTRYPOINT ["./scripts/tunnel.sh"]
 ```
