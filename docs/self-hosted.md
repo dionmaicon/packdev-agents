@@ -141,12 +141,21 @@ REPO=owner/repo GITHUB_TOKEN=ghp_... GITHUB_WEBHOOK_SECRET=... TEST_COMMAND="npm
 
 `--webhook` and `--once` are mutually exclusive. A `PROVIDER_MODULE` must
 implement the optional `verifyWebhookSignature` method (see
-`src/providers/types.ts`) to be usable with `--webhook` — one that doesn't
-fails at startup with a clear error, rather than silently accepting
-unverified requests.
+`src/providers/types.ts`) to be usable with `--webhook`; a module that
+doesn't implement it fails at startup with a clear error, rather than
+silently accepting unverified requests.
 
-Register the webhook URL (`http://your-host:$WEBHOOK_PORT$WEBHOOK_PATH`) on
-your forge:
+The listener itself has no TLS support — it speaks plain HTTP. For
+anything crossing a public network (including a tunnel to a local box),
+register the webhook with an `https://` URL and terminate TLS in front of
+the listener: a tunnel tool that itself provides HTTPS (ngrok, Cloudflare
+Tunnel), or your own reverse proxy if the box is directly reachable.
+Registering a bare `http://` URL sends both the PR payload and a replayable
+signed delivery across the network in clear text — only acceptable on a
+network you already trust end to end (e.g. a private LAN/VPN).
+
+Register the webhook URL (`https://your-host$WEBHOOK_PATH` — via a TLS
+tunnel/proxy in front of `$WEBHOOK_PORT`, see above) on your forge:
 
 - **GitHub**: repo Settings → Webhooks → Add webhook. Payload URL as
   above, content type `application/json`, secret = your
@@ -163,14 +172,12 @@ follow-up run instead of racing on the same clone dir/state file.
 
 ### Local testing with a tunnel
 
-An optional, deliberately generic tunnel launcher ships at
-`scripts/tunnel.sh` in the image — it never hardcodes a specific tool
-(ngrok, cloudflared, ...); you supply the full command via `TUNNEL_COMMAND`
-plus whatever env vars that command needs. No tunnel binary is bundled —
-keeps the main image lean and provider-agnostic. It also runs as a
-**separate** container from the webhook listener (one process per
-container; the tunnel dying shouldn't take down the listener, or vice
-versa).
+Simplest option: run the tunnel tool's own official image as a second
+compose service — most tunnel tools (ngrok, Cloudflare Tunnel, ...) publish
+one, and it already has the binary, so no build step is needed. It also
+runs as a **separate** container from the webhook listener (one process
+per container; the tunnel dying shouldn't take down the listener, or vice
+versa):
 
 ```yaml
 # docker-compose.yml — two services, one network
@@ -186,16 +193,46 @@ services:
       WEBHOOK_PORT: "8080"
 
   tunnel:
-    image: packdev-agents:local
-    entrypoint: ["./scripts/tunnel.sh"]
+    image: ngrok/ngrok:latest
+    command: ["http", "packdev-agents:8080"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+```
+
+(Swap the `tunnel` service for any other tool's own image the same way —
+`cloudflare/cloudflared`, etc.)
+
+If you'd rather build one custom image that bundles both this CLI and a
+tunnel binary, `scripts/tunnel.sh` is for that case: a deliberately generic
+launcher in this image — it never hardcodes a specific tool — that execs
+whatever you set `TUNNEL_COMMAND` to. Build a small derived image that adds
+the binary on top of this one, then point `entrypoint` at the script
+instead of a separate tool image:
+
+```dockerfile
+# Dockerfile.tunnel — adds ngrok to this image, kept as a separate service
+FROM packdev-agents:local
+USER root
+RUN apk add --no-cache curl \
+    && curl -sSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C /usr/local/bin
+USER packdev
+ENTRYPOINT ["./scripts/tunnel.sh"]
+```
+
+```yaml
+  tunnel:
+    build:
+      context: .
+      dockerfile: Dockerfile.tunnel
     environment:
       TUNNEL_COMMAND: "ngrok http packdev-agents:8080 --authtoken=$NGROK_AUTHTOKEN"
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
 ```
 
-This works identically for any other tunnel tool — just change
-`TUNNEL_COMMAND` (and whatever env vars it needs) for the `tunnel` service;
-nothing about the `packdev-agents` service changes.
+No tunnel binary is bundled in the published `packdev-agents` image itself
+either way — keeps it lean and provider-agnostic; you choose one of the two
+shapes above based on whether you want a separate image or one derived
+image.
 
 ## Environment variables
 

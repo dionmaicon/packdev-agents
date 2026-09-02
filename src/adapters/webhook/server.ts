@@ -11,6 +11,16 @@ export interface WebhookServerOptions {
   port: number;
   path: string;
   repos: Map<string, RepoEntry>;
+  /**
+   * Bounded retry backoff (ms) for a run that throws — a transient
+   * clone/forge failure gets a few automatic retries instead of the event
+   * being silently dropped, without building a durable queue. After the
+   * last retry is exhausted, the failure is only logged; recovery then
+   * needs either the next real webhook delivery for that repo, or pairing
+   * --webhook with an occasional --once cron run as a durability net.
+   * Exposed mainly so tests can use short delays. Default: 5s, 30s, 120s.
+   */
+  retryDelaysMs?: number[];
 }
 
 export interface WebhookServer {
@@ -18,26 +28,62 @@ export interface WebhookServer {
   stop(): Promise<void>;
 }
 
-const RELEVANT_ACTIONS = new Set(["opened", "reopened", "synchronize"]);
+export const DEFAULT_RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
 
-function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
+// "synchronize" is GitHub's spelling for "new commits pushed to the PR
+// branch"; Gitea's own webhook payload spells the same event
+// "synchronized" — both must be treated as the same trigger.
+const RELEVANT_ACTIONS = new Set(["opened", "reopened", "synchronize", "synchronized"]);
+
+// Only the provider-specific event-TYPE header (not the payload's "action"
+// field alone) reliably distinguishes a pull-request delivery from some
+// other signed event that happens to share the "action"/"repository" shape
+// (e.g. GitHub's "issues" event also has action:"opened" and a repository).
+// Checked when present; providers/deliveries that don't send a known one
+// fall back to action-only filtering, same as before.
+const EVENT_TYPE_HEADERS = ["x-github-event", "x-gitea-event", "x-gogs-event"];
+
+const MAX_BODY_BYTES = 1 * 1024 * 1024; // generous for a PR webhook payload, small enough to bound memory
+
+class PayloadTooLargeError extends Error {}
+
+function readRawBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const contentLength = Number(req.headers["content-length"]);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      reject(new PayloadTooLargeError());
+      return;
+    }
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new PayloadTooLargeError());
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * Per-repo run coalescing: two overlapping triggers for the same repo must
- * not run concurrently (they'd race writing the same state file/clone
- * dir). "running" means a run is in flight; "running+pending" means a
- * second trigger arrived while it was running, so exactly one more run
- * happens right after, instead of a second overlapping one starting
- * immediately or the trigger being silently dropped.
+ * Per-repo run coalescing + bounded retry: two overlapping triggers for the
+ * same repo must not run concurrently (they'd race writing the same state
+ * file/clone dir). "running" means a run (including any retry backoff) is
+ * in flight; "running+pending" means a real trigger arrived while it was
+ * in flight, so exactly one more run happens right after — instead of a
+ * second overlapping one starting immediately, or the trigger being
+ * silently dropped.
  */
-function createCoalescer(repos: Map<string, RepoEntry>): (repo: string) => void {
+function createCoalescer(repos: Map<string, RepoEntry>, retryDelaysMs: number[]): (repo: string) => void {
   const state = new Map<string, "running" | "running+pending">();
 
   function trigger(repo: string): void {
@@ -56,11 +102,22 @@ function createCoalescer(repos: Map<string, RepoEntry>): (repo: string) => void 
   }
 
   async function runAndDrain(repo: string, entry: RepoEntry): Promise<void> {
-    try {
-      await entry.run();
-    } catch (error) {
-      console.error(`[webhook] [${repo}] run failed: ${String(error)}`);
+    const maxAttempts = retryDelaysMs.length + 1;
+    let ok = false;
+    for (let attempt = 0; attempt < maxAttempts && !ok; attempt++) {
+      try {
+        await entry.run();
+        ok = true;
+      } catch (error) {
+        console.error(`[webhook] [${repo}] run failed (attempt ${attempt + 1}/${maxAttempts}): ${String(error)}`);
+        const delay = retryDelaysMs[attempt];
+        if (delay !== undefined) await sleep(delay);
+      }
     }
+    if (!ok) {
+      console.error(`[webhook] [${repo}] giving up after ${maxAttempts} attempts — will retry on the next webhook delivery for this repo.`);
+    }
+
     const next = state.get(repo);
     state.delete(repo);
     if (next === "running+pending") {
@@ -71,73 +128,119 @@ function createCoalescer(repos: Map<string, RepoEntry>): (repo: string) => void 
   return trigger;
 }
 
+function firstHeaderValue(headers: NodeJS.Dict<string | string[]>, name: string): string | undefined {
+  const value = headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function extractEventType(headers: NodeJS.Dict<string | string[]>): string | undefined {
+  for (const name of EVENT_TYPE_HEADERS) {
+    const value = firstHeaderValue(headers, name);
+    if (value) return value;
+  }
+  return undefined;
+}
+
 /**
  * Plain node:http webhook listener — no new dependency, matching this
- * repo's existing thin-wiring style. Verifies the payload's signature via
- * the matched repo's own Provider before doing anything else, so an
- * unsigned/forged request never reaches repo-matching logic that could
- * otherwise be used to fingerprint configured repos via timing/response
- * differences beyond the deliberately generic 200/401/404 responses below.
+ * repo's existing thin-wiring style. An unmatched repo and a bad signature
+ * both get the SAME response (401) — never distinguished via status code,
+ * which would otherwise let an unauthenticated caller enumerate the
+ * configured repo list by comparing responses for guessed repo names.
  */
 export function createWebhookServer(options: WebhookServerOptions): WebhookServer {
-  const trigger = createCoalescer(options.repos);
+  const trigger = createCoalescer(options.repos, options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS);
   const server = http.createServer((req, res) => {
     void handleRequest(req, res);
   });
 
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    if (req.method !== "POST" || req.url !== options.path) {
-      res.writeHead(404);
-      res.end();
-      return;
-    }
-
-    const rawBody = await readRawBody(req);
-
-    let payload: unknown;
     try {
-      payload = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      res.writeHead(400);
-      res.end();
-      return;
-    }
+      if (req.method !== "POST" || req.url !== options.path) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
 
-    const repoFullName = extractRepoFullName(payload);
-    const entry = repoFullName ? options.repos.get(repoFullName) : undefined;
-    if (!entry) {
-      // No match (or malformed payload) -> 200 no-op. Never distinguish
-      // this from any other no-op case (wrong action, etc.) via status
-      // code — that would leak which repos are configured to anyone who
-      // can send requests to this endpoint.
+      let rawBody: Buffer;
+      try {
+        rawBody = await readRawBody(req, MAX_BODY_BYTES);
+      } catch (error) {
+        res.writeHead(error instanceof PayloadTooLargeError ? 413 : 400);
+        res.end();
+        return;
+      }
+
+      let payload: unknown;
+      try {
+        payload = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        res.writeHead(400);
+        res.end();
+        return;
+      }
+
+      const repoFullName = extractRepoFullName(payload);
+      const entry = repoFullName ? options.repos.get(repoFullName) : undefined;
+      if (!entry) {
+        // No match (or malformed payload) -> same response as a bad
+        // signature below — see this function's doc comment.
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+
+      let verified: boolean;
+      try {
+        verified = entry.provider.verifyWebhookSignature?.(rawBody, req.headers) ?? false;
+      } catch (error) {
+        // The Provider contract says verifyWebhookSignature must never
+        // throw, but a third-party PROVIDER_MODULE could violate that —
+        // treat it the same as "false" rather than letting it become an
+        // unhandled rejection that could take down the whole listener.
+        console.error(`[webhook] verifyWebhookSignature threw, treating as unverified: ${String(error)}`);
+        verified = false;
+      }
+      if (!verified) {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+
+      const eventType = extractEventType(req.headers);
+      if (eventType !== undefined && eventType !== "pull_request") {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+
+      const action = extractAction(payload);
+      if (!action || !RELEVANT_ACTIONS.has(action)) {
+        res.writeHead(200);
+        res.end();
+        return;
+      }
+
       res.writeHead(200);
       res.end();
-      return;
+      trigger(repoFullName!);
+    } catch (error) {
+      console.error(`[webhook] unexpected error handling request: ${String(error)}`);
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end();
+      }
     }
-
-    const verified = entry.provider.verifyWebhookSignature?.(rawBody, req.headers) ?? false;
-    if (!verified) {
-      res.writeHead(401);
-      res.end();
-      return;
-    }
-
-    const action = extractAction(payload);
-    if (!action || !RELEVANT_ACTIONS.has(action)) {
-      res.writeHead(200);
-      res.end();
-      return;
-    }
-
-    res.writeHead(200);
-    res.end();
-    trigger(repoFullName!);
   }
 
   return {
     start(): Promise<void> {
-      return new Promise((resolve) => {
-        server.listen(options.port, resolve);
+      return new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(options.port, () => {
+          server.removeListener("error", reject);
+          resolve();
+        });
       });
     },
     stop(): Promise<void> {

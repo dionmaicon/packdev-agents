@@ -63,3 +63,16 @@ test("verifyWebhookSignature: missing GITEA_WEBHOOK_SECRET -> false, does not th
   const body = Buffer.from(JSON.stringify({ hello: "world" }));
   assert.equal(provider.verifyWebhookSignature!(body, { "x-gitea-signature": sign("whatever", body) }), false);
 });
+
+test("verifyWebhookSignature: a correct 64-char digest with trailing garbage -> false, not silently truncated and accepted", () => {
+  const provider = createGiteaProvider(baseEnv({ GITEA_WEBHOOK_SECRET: "s3cret" }));
+  const body = Buffer.from(JSON.stringify({ hello: "world" }));
+  const validSig = sign("s3cret", body); // 64 hex chars
+  assert.equal(provider.verifyWebhookSignature!(body, { "x-gitea-signature": validSig + "zz" }), false);
+});
+
+test("verifyWebhookSignature: a short (truncated) digest -> false", () => {
+  const provider = createGiteaProvider(baseEnv({ GITEA_WEBHOOK_SECRET: "s3cret" }));
+  const body = Buffer.from(JSON.stringify({ hello: "world" }));
+  assert.equal(provider.verifyWebhookSignature!(body, { "x-gitea-signature": "deadbeef" }), false);
+});

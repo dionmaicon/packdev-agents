@@ -70,7 +70,7 @@ test("createWebhookServer: valid signed request for a configured repo triggers r
   });
 });
 
-test("createWebhookServer: unmatched repo -> 200 no-op, run() not called", async () => {
+test("createWebhookServer: unmatched repo -> 401 (SAME as a bad signature, not 200) — no repo-enumeration oracle, run() not called", async () => {
   let ran = false;
   const server = createWebhookServer({
     port: 18081,
@@ -90,7 +90,7 @@ test("createWebhookServer: unmatched repo -> 200 no-op, run() not called", async
 
   await withServer(server, async () => {
     const status = await post(18081, "/webhook", { action: "opened", repository: { full_name: "owner/other" } });
-    assert.equal(status, 200);
+    assert.equal(status, 401);
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(ran, false);
   });
@@ -208,4 +208,195 @@ test("createWebhookServer: coalescing — two triggers while a run is in flight 
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(runCount, 2);
   });
+});
+
+test("createWebhookServer: Gitea's 'synchronized' action spelling triggers run() too", async () => {
+  let ran = false;
+  const server = createWebhookServer({
+    port: 18086,
+    path: "/webhook",
+    repos: new Map([
+      ["owner/repo", { provider: fakeProvider(() => true), run: async () => { ran = true; } }],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    await post(18086, "/webhook", { action: "synchronized", repository: { full_name: "owner/repo" } });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ran, true);
+  });
+});
+
+test("createWebhookServer: event-type header not pull_request (e.g. GitHub 'issues') -> 200 no-op, run() not called even though action/repository match", async () => {
+  let ran = false;
+  const server = createWebhookServer({
+    port: 18087,
+    path: "/webhook",
+    repos: new Map([
+      ["owner/repo", { provider: fakeProvider(() => true), run: async () => { ran = true; } }],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    const status = await post(
+      18087,
+      "/webhook",
+      { action: "opened", repository: { full_name: "owner/repo" } },
+      { "x-github-event": "issues" },
+    );
+    assert.equal(status, 200);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ran, false);
+  });
+});
+
+test("createWebhookServer: event-type header IS pull_request -> triggers run() normally", async () => {
+  let ran = false;
+  const server = createWebhookServer({
+    port: 18088,
+    path: "/webhook",
+    repos: new Map([
+      ["owner/repo", { provider: fakeProvider(() => true), run: async () => { ran = true; } }],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    await post(
+      18088,
+      "/webhook",
+      { action: "opened", repository: { full_name: "owner/repo" } },
+      { "x-gitea-event": "pull_request" },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ran, true);
+  });
+});
+
+test("createWebhookServer: oversized body -> 413, run() not called", async () => {
+  let ran = false;
+  const server = createWebhookServer({
+    port: 18089,
+    path: "/webhook",
+    repos: new Map([
+      ["owner/repo", { provider: fakeProvider(() => true), run: async () => { ran = true; } }],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    // Oversized via a declared Content-Length past the server's cap —
+    // exercises the fast-reject path without actually sending 1MB+.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: 18089,
+          path: "/webhook",
+          method: "POST",
+          headers: { "content-type": "application/json", "content-length": 2 * 1024 * 1024 },
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode!));
+        },
+      );
+      req.on("error", reject);
+      req.end(Buffer.alloc(1024)); // body itself doesn't need to match content-length for this check
+    });
+    assert.equal(status, 413);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ran, false);
+  });
+});
+
+test("createWebhookServer: a verifyWebhookSignature that THROWS (contract violation) is treated as unverified, not an unhandled rejection", async () => {
+  let ran = false;
+  const server = createWebhookServer({
+    port: 18090,
+    path: "/webhook",
+    repos: new Map([
+      [
+        "owner/repo",
+        {
+          provider: fakeProvider(() => {
+            throw new Error("buggy PROVIDER_MODULE");
+          }),
+          run: async () => {
+            ran = true;
+          },
+        },
+      ],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    const status = await post(18090, "/webhook", { action: "opened", repository: { full_name: "owner/repo" } });
+    assert.equal(status, 401);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ran, false);
+  });
+});
+
+test("createWebhookServer: a run() that fails is retried with the configured backoff, then succeeds", async () => {
+  let attempts = 0;
+  const server = createWebhookServer({
+    port: 18091,
+    path: "/webhook",
+    retryDelaysMs: [10, 10],
+    repos: new Map([
+      [
+        "owner/repo",
+        {
+          provider: fakeProvider(() => true),
+          run: async () => {
+            attempts++;
+            if (attempts < 3) throw new Error("transient forge failure");
+          },
+        },
+      ],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    await post(18091, "/webhook", { action: "opened", repository: { full_name: "owner/repo" } });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(attempts, 3);
+  });
+});
+
+test("createWebhookServer: a run() that keeps failing gives up after the configured retries, doesn't retry forever", async () => {
+  let attempts = 0;
+  const server = createWebhookServer({
+    port: 18092,
+    path: "/webhook",
+    retryDelaysMs: [10, 10],
+    repos: new Map([
+      [
+        "owner/repo",
+        {
+          provider: fakeProvider(() => true),
+          run: async () => {
+            attempts++;
+            throw new Error("permanent forge failure");
+          },
+        },
+      ],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    await post(18092, "/webhook", { action: "opened", repository: { full_name: "owner/repo" } });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(attempts, 3); // 1 initial + 2 retries (retryDelaysMs.length)
+  });
+});
+
+test("createWebhookServer: start() rejects on a bind failure (e.g. EADDRINUSE) instead of throwing an uncaught error", async () => {
+  const blocker = http.createServer();
+  await new Promise<void>((resolve) => blocker.listen(18093, resolve));
+  try {
+    const server = createWebhookServer({ port: 18093, path: "/webhook", repos: new Map() });
+    await assert.rejects(() => server.start());
+  } finally {
+    await new Promise<void>((resolve) => blocker.close(() => resolve()));
+  }
 });

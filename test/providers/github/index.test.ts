@@ -56,3 +56,16 @@ test("verifyWebhookSignature: missing GITHUB_WEBHOOK_SECRET -> false, does not t
   const headers = { "x-hub-signature-256": sign("whatever", body) };
   assert.equal(provider.verifyWebhookSignature!(body, headers), false);
 });
+
+test("verifyWebhookSignature: a correct 64-char digest with trailing garbage -> false, not silently truncated and accepted", () => {
+  const provider = createGithubProvider(baseEnv({ GITHUB_WEBHOOK_SECRET: "s3cret" }));
+  const body = Buffer.from(JSON.stringify({ hello: "world" }));
+  const validSig = sign("s3cret", body); // "sha256=<64 hex chars>"
+  assert.equal(provider.verifyWebhookSignature!(body, { "x-hub-signature-256": validSig + "zz" }), false);
+});
+
+test("verifyWebhookSignature: a short (truncated) digest -> false", () => {
+  const provider = createGithubProvider(baseEnv({ GITHUB_WEBHOOK_SECRET: "s3cret" }));
+  const body = Buffer.from(JSON.stringify({ hello: "world" }));
+  assert.equal(provider.verifyWebhookSignature!(body, { "x-hub-signature-256": "sha256=deadbeef" }), false);
+});
