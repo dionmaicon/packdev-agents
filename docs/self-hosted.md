@@ -22,7 +22,8 @@ doc is optional tuning.
    - `github` (default) — needs `GITHUB_TOKEN`
    - `gitea` — needs `GITEA_URL` + `GITEA_TOKEN` + `GITEA_USERNAME`
 3. **How does it run?** `--once` from your own cron/systemd timer, the
-   built-in poll loop, or the Docker image — see "Install" below.
+   built-in poll loop, or `--webhook` if your box has a reachable endpoint
+   (instant instead of polling — see "Webhook mode" below).
 
 Minimal working example, GitHub, `compat` only, single run:
 
@@ -109,14 +110,133 @@ from scratch instead of skipping ones already handled at the current head.
 ## Commands
 
 ```
-packdev-agents compat [--once]     # deterministic packdev-compat pipeline, can auto-merge
-packdev-agents triage [--once]     # experimental agentic advisory pipeline, never merges
+packdev-agents compat [--once|--webhook]     # deterministic packdev-compat pipeline, can auto-merge
+packdev-agents triage [--once|--webhook]     # experimental agentic advisory pipeline, never merges
 ```
 
-Without `--once`, either command polls in a loop (`POLL_INTERVAL_SECONDS`,
-default 300) until `SIGINT`/`SIGTERM`. `--once` runs a single cycle and
-exits — the shape to use from your own cron/systemd timer instead of this
-process's built-in loop.
+Without `--once`/`--webhook`, either command polls in a loop
+(`POLL_INTERVAL_SECONDS`, default 300) until `SIGINT`/`SIGTERM`. `--once`
+runs a single cycle and exits — the shape to use from your own cron/systemd
+timer instead of this process's built-in loop. `--webhook` starts an HTTP
+listener instead — see "Webhook mode" below.
+
+## Webhook mode
+
+Only worth using if your box already has a reachable endpoint — a VPS, a
+home box with port forwarding, or (for local testing) a box exposed via
+your own tunnel of choice. If not, the poll loop above is the simpler
+default and needs no inbound connectivity at all.
+
+```sh
+REPO=owner/repo GITHUB_TOKEN=ghp_... GITHUB_WEBHOOK_SECRET=... TEST_COMMAND="npm test" \
+  packdev-agents compat --webhook
+```
+
+| Var | Required | Notes |
+|---|---|---|
+| `WEBHOOK_PORT` | no | default `8080` |
+| `WEBHOOK_PATH` | no | default `/webhook` |
+| `GITHUB_WEBHOOK_SECRET` | if `PROVIDER=github` | checked at startup, before the server binds — a missing secret fails immediately rather than accepting unverified requests |
+| `GITEA_WEBHOOK_SECRET` | if `PROVIDER=gitea` | same as above |
+
+`--webhook` and `--once` are mutually exclusive. A `PROVIDER_MODULE` must
+implement the optional `verifyWebhookSignature` method (see
+`src/providers/types.ts`) to be usable with `--webhook`; a module that
+doesn't implement it fails at startup with a clear error, rather than
+silently accepting unverified requests.
+
+The listener itself has no TLS support — it speaks plain HTTP. For
+anything crossing a public network (including a tunnel to a local box),
+register the webhook with an `https://` URL and terminate TLS in front of
+the listener: a tunnel tool that itself provides HTTPS (ngrok, Cloudflare
+Tunnel), or your own reverse proxy if the box is directly reachable.
+Registering a bare `http://` URL sends both the PR payload and a replayable
+signed delivery across the network in clear text — only acceptable on a
+network you already trust end to end (e.g. a private LAN/VPN).
+
+Register the webhook URL (`https://your-host$WEBHOOK_PATH` — via a TLS
+tunnel/proxy in front of `$WEBHOOK_PORT`, see above) on your forge:
+
+- **GitHub**: repo Settings → Webhooks → Add webhook. Payload URL as
+  above, content type `application/json`, secret = your
+  `GITHUB_WEBHOOK_SECRET`, events: "Pull requests" only.
+- **Gitea**: repo Settings → Webhooks → Add Webhook → Gitea. Target URL as
+  above, content type `application/json`, secret = your
+  `GITEA_WEBHOOK_SECRET`, trigger on "Pull Request" events only.
+
+Every repo in a `REPOS` list is served from the same listener (matched by
+the webhook payload's `repository.full_name`) — no per-repo port/process
+needed. Concurrent triggers for the same repo are coalesced: a second
+trigger arriving while a run is already in flight queues at most one
+follow-up run instead of racing on the same clone dir/state file.
+
+### Local testing with a tunnel
+
+Simplest option: run the tunnel tool's own official image as a second
+compose service — most tunnel tools (ngrok, Cloudflare Tunnel, ...) publish
+one, and it already has the binary, so no build step is needed. It also
+runs as a **separate** container from the webhook listener (one process
+per container; the tunnel dying shouldn't take down the listener, or vice
+versa):
+
+```yaml
+# docker-compose.yml — two services, one network
+services:
+  packdev-agents:
+    image: packdev-agents:local
+    command: ["compat", "--webhook"]
+    environment:
+      REPO: owner/repo
+      GITHUB_TOKEN: ghp_...
+      GITHUB_WEBHOOK_SECRET: s3cret
+      TEST_COMMAND: "npm test"
+      WEBHOOK_PORT: "8080"
+
+  tunnel:
+    image: ngrok/ngrok:latest
+    command: ["http", "packdev-agents:8080"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+```
+
+(Swap the `tunnel` service for any other tool's own image the same way —
+`cloudflare/cloudflared`, etc.)
+
+If you'd rather build one custom image that bundles both this CLI and a
+tunnel binary, `scripts/tunnel.sh` is for that case: a deliberately generic
+launcher in this image — it never hardcodes a specific tool — that execs
+whatever you set `TUNNEL_COMMAND` to. Build a small derived image that adds
+the binary on top of this one, then point `entrypoint` at the script
+instead of a separate tool image:
+
+```dockerfile
+# Dockerfile.tunnel — adds ngrok to this image, kept as a separate service.
+# Copies the binary out of ngrok's own official, signed image instead of
+# piping an arbitrary URL through curl into tar as root — a compromised or
+# MITM'd download at build time would otherwise run as root with no
+# checksum/signature check at all.
+FROM ngrok/ngrok:latest AS ngrok
+FROM packdev-agents:local
+USER root
+COPY --from=ngrok /bin/ngrok /usr/local/bin/ngrok
+USER packdev
+ENTRYPOINT ["./scripts/tunnel.sh"]
+```
+
+```yaml
+  tunnel:
+    build:
+      context: .
+      dockerfile: Dockerfile.tunnel
+    environment:
+      TUNNEL_COMMAND: "ngrok http packdev-agents:8080 --authtoken=$NGROK_AUTHTOKEN"
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+```
+
+No tunnel binary is bundled in the published `packdev-agents` image itself
+either way — keeps it lean and provider-agnostic; you choose one of the two
+shapes above based on whether you want a separate image or one derived
+image.
 
 ## Environment variables
 

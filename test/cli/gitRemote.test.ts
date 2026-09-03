@@ -2,7 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { resolveGitRemote, sameHttpOrigin, readRepoList, repoPathSegment, resolveRepoPaths, readCommonEnv } from "../../src/cli/index.ts";
+import {
+  resolveGitRemote,
+  sameHttpOrigin,
+  readRepoList,
+  repoPathSegment,
+  resolveRepoPaths,
+  readCommonEnv,
+  throwOnRunFailure,
+} from "../../src/cli/index.ts";
 
 test("sameHttpOrigin: identical protocol+host -> true, even with different paths", () => {
   assert.equal(sameHttpOrigin("https://github.com/a/b.git", "https://github.com/c/d.git"), true);
@@ -195,4 +203,34 @@ test("readCommonEnv: PROVIDER=gitea WITH an explicit ALLOWED_ACTORS -> the expli
   withEnv({ ALLOWED_ACTORS: "dionmaicon", PROVIDER: "gitea" }, () => {
     assert.deepEqual(readCommonEnv().allowedActors, ["dionmaicon"]);
   });
+});
+
+// throwOnRunFailure is what --webhook mode's run() closures wrap
+// runCompatForRepo/runTriageForRepo in — createWebhookServer's coalescer
+// only retries a run() that REJECTS, but runCompatForRepo/runTriageForRepo
+// themselves catch every failure and report it in the returned outcome
+// instead of throwing (that's the right shape for --once/loop, which just
+// logs it). Without this translation, a webhook-triggered failure would be
+// silently swallowed — logged once, never retried.
+test("throwOnRunFailure: ok:false outcome -> throws the original error", () => {
+  const error = new Error("clone failed");
+  assert.throws(() => throwOnRunFailure({ repo: "owner/repo", ok: false, error }), /clone failed/);
+});
+
+test("throwOnRunFailure: ok:false outcome with a non-Error error value -> still throws, wrapped", () => {
+  assert.throws(() => throwOnRunFailure({ repo: "owner/repo", ok: false, error: "some string error" }), /some string error/);
+});
+
+test("throwOnRunFailure: ok:true with a non-empty result.failed -> throws", () => {
+  const outcome = {
+    repo: "owner/repo",
+    ok: true as const,
+    result: { failed: [{ pr: { number: 1 }, error: new Error("boom") }] },
+  };
+  assert.throws(() => throwOnRunFailure(outcome), /1 PR\(s\) failed this cycle/);
+});
+
+test("throwOnRunFailure: ok:true with an empty result.failed -> does not throw", () => {
+  const outcome = { repo: "owner/repo", ok: true as const, result: { failed: [] } };
+  assert.doesNotThrow(() => throwOnRunFailure(outcome));
 });

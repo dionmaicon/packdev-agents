@@ -206,6 +206,53 @@ test("compat --once: REPOS empty after trimming -> clear error", async () => {
   assert.match(stderr, /REPOS must contain at least one "owner\/repo"/);
 });
 
+test("compat --once --webhook together -> clear mutually-exclusive error", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once", "--webhook"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    TEST_COMMAND: "true",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /--once and --webhook are mutually exclusive/);
+});
+
+test("compat --webhook: PROVIDER=github with no GITHUB_WEBHOOK_SECRET -> clear startup error, server never binds", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--webhook"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    TEST_COMMAND: "true",
+    WEBHOOK_PORT: "0",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Missing required environment variable: GITHUB_WEBHOOK_SECRET/);
+});
+
+test("compat --webhook: PROVIDER=gitea with no GITEA_WEBHOOK_SECRET -> clear startup error", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--webhook"], {
+    REPO: "owner/repo",
+    PROVIDER: "gitea",
+    GITEA_URL: "https://gitea.example.com",
+    GITEA_TOKEN: "fake",
+    GITEA_USERNAME: "u",
+    TEST_COMMAND: "true",
+    WEBHOOK_PORT: "0",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /Missing required environment variable: GITEA_WEBHOOK_SECRET/);
+});
+
+test("compat --webhook: WEBHOOK_PORT=notanumber is rejected before binding", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--webhook"], {
+    REPO: "octocat/hello-world",
+    GITHUB_TOKEN: "fake",
+    TEST_COMMAND: "true",
+    GITHUB_WEBHOOK_SECRET: "s3cret",
+    WEBHOOK_PORT: "notanumber",
+  });
+  assert.equal(exitCode, 1);
+  assert.match(stderr, /WEBHOOK_PORT must be a positive integer/);
+});
+
 test("invoked through a SYMLINK (npm's actual bin mechanism) -> main() still runs, not silently a no-op", async () => {
   // Reproduces npm's real bin layout: node_modules/.bin/packdev-agents is
   // a symlink to dist/cli/index.js. process.argv[1] reports the symlink

@@ -47,6 +47,17 @@ export interface Provider {
   createForgeOpsFor(pr: OpenBotPR): ForgeOps;
   /** Used as the default REMOTE_URL/credential for git clone/fetch — see GitRemote's doc comment. */
   createGitRemote(): GitRemote;
+  /**
+   * Verifies an inbound webhook's signature against this provider's own
+   * scheme (GitHub: HMAC-SHA256 over the raw body, "x-hub-signature-256"
+   * header, "sha256=<hex>" — Gitea: HMAC-SHA256, "x-gitea-signature"
+   * header, bare hex). Optional: a PROVIDER_MODULE that doesn't implement
+   * this makes --webhook mode refuse to start with a clear error, rather
+   * than silently accepting unverified requests. Must never throw — return
+   * false for any failure (missing secret, missing/malformed header, or a
+   * genuine mismatch).
+   */
+  verifyWebhookSignature?(rawBody: Buffer, headers: NodeJS.Dict<string | string[]>): boolean;
 }
 
 /**

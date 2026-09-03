@@ -10,6 +10,7 @@ import { pollOnce, type PollResult } from "../adapters/selfhosted/poll.js";
 import { pollTriageOnce, type TriagePollResult } from "../adapters/agentic-triage/poll.js";
 import { createAnthropicAgentLoop, createOpenAiCompatibleAgentLoop, type AgentLoop } from "../adapters/agentic-triage/agentLoop.js";
 import { createPollLoop } from "../adapters/selfhosted/loop.js";
+import { createWebhookServer, type WebhookServer } from "../adapters/webhook/server.js";
 
 function env(name: string): string | undefined {
   return process.env[name];
@@ -247,7 +248,7 @@ export function sameHttpOrigin(a: string, b: string): boolean {
  * isolation (below) is for RUNTIME failures during the actual poll
  * (a renamed repo, a forge outage), not startup config errors.
  */
-async function resolveProvidersForRepos(repos: string[]): Promise<Map<string, Provider>> {
+export async function resolveProvidersForRepos(repos: string[]): Promise<Map<string, Provider>> {
   const providers = new Map<string, Provider>();
   for (const repo of repos) {
     providers.set(repo, await resolveProvider({ ...process.env, REPO: repo }));
@@ -255,7 +256,28 @@ async function resolveProvidersForRepos(repos: string[]): Promise<Map<string, Pr
   return providers;
 }
 
-interface RepoRunOutcome<T extends { failed: unknown[] }> {
+/**
+ * runCompatForRepo/runTriageForRepo already catch their own failures and
+ * report them in the returned RepoRunOutcome (ok:false, or a populated
+ * result.failed) rather than throwing — the --once/loop callers only log
+ * that outcome. The webhook path's run() callback needs the OPPOSITE
+ * behavior: it must throw on either failure shape, because
+ * createWebhookServer's coalescer only retries a run that rejects. Without
+ * this, a transient clone/forge failure during --webhook mode would be
+ * swallowed silently (already logged once by runCompatForRepo, but never
+ * retried) instead of triggering the bounded backoff retry.
+ */
+export function throwOnRunFailure<T extends { failed: unknown[] }>(outcome: RepoRunOutcome<T>): void {
+  if (!outcome.ok) {
+    throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error));
+  }
+  const failedCount = outcome.result?.failed.length ?? 0;
+  if (failedCount > 0) {
+    throw new Error(`[${outcome.repo}] ${failedCount} PR(s) failed this cycle`);
+  }
+}
+
+export interface RepoRunOutcome<T extends { failed: unknown[] }> {
   repo: string;
   ok: boolean;
   result?: T;
@@ -297,6 +319,49 @@ function logCompatResult(repo: string, result: PollResult): void {
   }
 }
 
+export interface CompatRunCtx {
+  common: ReturnType<typeof readCommonEnv>;
+  testCommand: string | undefined;
+  testScript: string | undefined;
+  autoMerge: boolean;
+  testCombinedBump: boolean | undefined;
+  brain: Brain | undefined;
+}
+
+/** One repo's compat cycle — shared by the --once/loop path (runCompatOnce) and --webhook (each trigger runs exactly this for its matched repo). */
+export async function runCompatForRepo(
+  repo: string,
+  provider: Provider,
+  cloneDir: string,
+  statePath: string,
+  ctx: CompatRunCtx,
+): Promise<RepoRunOutcome<PollResult>> {
+  try {
+    const { remoteUrl, authHeader } = resolveGitRemote(provider);
+
+    const result = await pollOnce({
+      cloneDir,
+      remoteUrl,
+      authHeader,
+      statePath,
+      ...(ctx.testScript ? { testScript: ctx.testScript } : { testCommand: ctx.testCommand }),
+      prSource: provider.createPullRequestSource(),
+      forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
+      allowedActors: ctx.common.allowedActors,
+      autoMerge: ctx.autoMerge,
+      brain: ctx.brain,
+      ...(ctx.common.packageJsonPath ? { packageJsonPath: ctx.common.packageJsonPath } : {}),
+      ...(ctx.testCombinedBump !== undefined ? { testCombinedBump: ctx.testCombinedBump } : {}),
+    });
+
+    logCompatResult(repo, result);
+    return { repo, ok: true, result };
+  } catch (error) {
+    console.error(`[${repo}] FAILED this cycle, will retry next cycle — ${String(error)}`);
+    return { repo, ok: false, error };
+  }
+}
+
 async function runCompatOnce(): Promise<RepoRunOutcome<PollResult>[]> {
   const repos = readRepoList();
   if (repos.length > 1 && env("REMOTE_URL")) {
@@ -312,6 +377,7 @@ async function runCompatOnce(): Promise<RepoRunOutcome<PollResult>[]> {
   }
   const testCombinedBump = testCombinedBumpInput !== undefined ? testCombinedBumpInput === "true" : undefined;
   const brain = buildBrain();
+  const ctx: CompatRunCtx = { common, testCommand, testScript, autoMerge, testCombinedBump, brain };
 
   const paths = resolveRepoPaths(
     repos,
@@ -325,30 +391,7 @@ async function runCompatOnce(): Promise<RepoRunOutcome<PollResult>[]> {
   for (const repo of repos) {
     const { cloneDir, statePath } = paths.get(repo)!;
     const provider = providers.get(repo)!;
-    try {
-      const { remoteUrl, authHeader } = resolveGitRemote(provider);
-
-      const result = await pollOnce({
-        cloneDir,
-        remoteUrl,
-        authHeader,
-        statePath,
-        ...(testScript ? { testScript } : { testCommand }),
-        prSource: provider.createPullRequestSource(),
-        forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
-        allowedActors: common.allowedActors,
-        autoMerge,
-        brain,
-        ...(common.packageJsonPath ? { packageJsonPath: common.packageJsonPath } : {}),
-        ...(testCombinedBump !== undefined ? { testCombinedBump } : {}),
-      });
-
-      logCompatResult(repo, result);
-      outcomes.push({ repo, ok: true, result });
-    } catch (error) {
-      console.error(`[${repo}] FAILED this cycle, will retry next cycle — ${String(error)}`);
-      outcomes.push({ repo, ok: false, error });
-    }
+    outcomes.push(await runCompatForRepo(repo, provider, cloneDir, statePath, ctx));
   }
   return outcomes;
 }
@@ -386,6 +429,44 @@ function logTriageResult(repo: string, result: TriagePollResult): void {
   }
 }
 
+export interface TriageRunCtx {
+  common: ReturnType<typeof readCommonEnv>;
+  maxTurns: number | undefined;
+  agentLoop: AgentLoop;
+}
+
+/** One repo's triage cycle — shared by the --once/loop path (runTriageOnce) and --webhook. */
+export async function runTriageForRepo(
+  repo: string,
+  provider: Provider,
+  cloneDir: string,
+  statePath: string,
+  ctx: TriageRunCtx,
+): Promise<RepoRunOutcome<TriagePollResult>> {
+  try {
+    const { remoteUrl, authHeader } = resolveGitRemote(provider);
+
+    const result = await pollTriageOnce({
+      cloneDir,
+      remoteUrl,
+      authHeader,
+      statePath,
+      prSource: provider.createPullRequestSource(),
+      forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
+      agentLoop: ctx.agentLoop,
+      allowedActors: ctx.common.allowedActors,
+      ...(ctx.maxTurns !== undefined ? { maxTurns: ctx.maxTurns } : {}),
+      ...(ctx.common.packageJsonPath ? { packageJsonPath: ctx.common.packageJsonPath } : {}),
+    });
+
+    logTriageResult(repo, result);
+    return { repo, ok: true, result };
+  } catch (error) {
+    console.error(`[${repo}] FAILED this cycle, will retry next cycle — ${String(error)}`);
+    return { repo, ok: false, error };
+  }
+}
+
 async function runTriageOnce(): Promise<RepoRunOutcome<TriagePollResult>[]> {
   const repos = readRepoList();
   if (repos.length > 1 && env("REMOTE_URL")) {
@@ -395,6 +476,7 @@ async function runTriageOnce(): Promise<RepoRunOutcome<TriagePollResult>[]> {
   const common = readCommonEnv();
   const maxTurns = readMaxTurns();
   const agentLoop = buildAgentLoop();
+  const ctx: TriageRunCtx = { common, maxTurns, agentLoop };
 
   const paths = resolveRepoPaths(
     repos,
@@ -408,33 +490,124 @@ async function runTriageOnce(): Promise<RepoRunOutcome<TriagePollResult>[]> {
   for (const repo of repos) {
     const { cloneDir, statePath } = paths.get(repo)!;
     const provider = providers.get(repo)!;
-    try {
-      const { remoteUrl, authHeader } = resolveGitRemote(provider);
-
-      const result = await pollTriageOnce({
-        cloneDir,
-        remoteUrl,
-        authHeader,
-        statePath,
-        prSource: provider.createPullRequestSource(),
-        forgeOpsFor: (pr) => provider.createForgeOpsFor(pr),
-        agentLoop,
-        allowedActors: common.allowedActors,
-        ...(maxTurns !== undefined ? { maxTurns } : {}),
-        ...(common.packageJsonPath ? { packageJsonPath: common.packageJsonPath } : {}),
-      });
-
-      logTriageResult(repo, result);
-      outcomes.push({ repo, ok: true, result });
-    } catch (error) {
-      console.error(`[${repo}] FAILED this cycle, will retry next cycle — ${String(error)}`);
-      outcomes.push({ repo, ok: false, error });
-    }
+    outcomes.push(await runTriageForRepo(repo, provider, cloneDir, statePath, ctx));
   }
   return outcomes;
 }
 
-const USAGE = `Usage: packdev-agents <compat|triage> [--once]
+function readWebhookConfig(): { port: number; path: string } {
+  const portInput = env("WEBHOOK_PORT") ?? "8080";
+  const port = Number(portInput);
+  if (!Number.isFinite(port) || !Number.isInteger(port) || port <= 0) {
+    throw new Error(`WEBHOOK_PORT must be a positive integer, got "${portInput}"`);
+  }
+  const webhookPath = env("WEBHOOK_PATH") ?? "/webhook";
+  return { port, path: webhookPath };
+}
+
+/**
+ * Fails fast, before the server ever binds a port, rather than accepting
+ * every request as unverified at runtime. A PROVIDER_MODULE that doesn't
+ * implement verifyWebhookSignature can't safely run in --webhook mode at
+ * all — there'd be no way to reject a forged request. The built-in
+ * providers always implement the method, but it only returns false (not
+ * throw) on a missing secret, so the secret itself is checked eagerly here
+ * too, named per-provider so the error points at the right env var.
+ */
+function assertWebhookReady(repos: string[], providers: Map<string, Provider>): void {
+  for (const repo of repos) {
+    const provider = providers.get(repo)!;
+    if (typeof provider.verifyWebhookSignature !== "function") {
+      throw new Error(
+        `Provider for "${repo}" does not implement verifyWebhookSignature — --webhook mode requires it (see docs/self-hosted.md).`,
+      );
+    }
+  }
+  if (env("PROVIDER_MODULE")) return;
+  const providerName = env("PROVIDER") ?? "github";
+  if (providerName === "github") requireEnv("GITHUB_WEBHOOK_SECRET");
+  else if (providerName === "gitea") requireEnv("GITEA_WEBHOOK_SECRET");
+}
+
+async function buildCompatWebhookServer(): Promise<WebhookServer> {
+  const repos = readRepoList();
+  if (repos.length > 1 && env("REMOTE_URL")) {
+    throw new Error("REMOTE_URL cannot be used with multiple REPOS — it would point every repo's clone at the same git remote.");
+  }
+  const providers = await resolveProvidersForRepos(repos);
+  assertWebhookReady(repos, providers);
+  const common = readCommonEnv();
+  const { testCommand, testScript } = readTestConfig();
+  const autoMerge = env("AUTO_MERGE") === "true";
+  const testCombinedBumpInput = env("TEST_COMBINED_BUMP");
+  if (testCombinedBumpInput !== undefined && testCombinedBumpInput !== "true" && testCombinedBumpInput !== "false") {
+    throw new Error(`TEST_COMBINED_BUMP must be "true" or "false", got "${testCombinedBumpInput}"`);
+  }
+  const testCombinedBump = testCombinedBumpInput !== undefined ? testCombinedBumpInput === "true" : undefined;
+  const brain = buildBrain();
+  const ctx: CompatRunCtx = { common, testCommand, testScript, autoMerge, testCombinedBump, brain };
+
+  const paths = resolveRepoPaths(
+    repos,
+    env("CLONE_DIR"),
+    env("STATE_PATH"),
+    { cloneDir: "./.packdev-agents/repo", statePath: "./.packdev-agents/state.json" },
+    { cloneDir: "./.packdev-agents/repos", statePath: "./.packdev-agents/state" },
+  );
+
+  const { port, path: webhookPath } = readWebhookConfig();
+  const repoEntries = new Map<string, { provider: Provider; run: () => Promise<void> }>();
+  for (const repo of repos) {
+    const provider = providers.get(repo)!;
+    const { cloneDir, statePath } = paths.get(repo)!;
+    repoEntries.set(repo, {
+      provider,
+      run: async () => {
+        throwOnRunFailure(await runCompatForRepo(repo, provider, cloneDir, statePath, ctx));
+      },
+    });
+  }
+
+  return createWebhookServer({ port, path: webhookPath, repos: repoEntries });
+}
+
+async function buildTriageWebhookServer(): Promise<WebhookServer> {
+  const repos = readRepoList();
+  if (repos.length > 1 && env("REMOTE_URL")) {
+    throw new Error("REMOTE_URL cannot be used with multiple REPOS — it would point every repo's clone at the same git remote.");
+  }
+  const providers = await resolveProvidersForRepos(repos);
+  assertWebhookReady(repos, providers);
+  const common = readCommonEnv();
+  const maxTurns = readMaxTurns();
+  const agentLoop = buildAgentLoop();
+  const ctx: TriageRunCtx = { common, maxTurns, agentLoop };
+
+  const paths = resolveRepoPaths(
+    repos,
+    env("CLONE_DIR"),
+    env("TRIAGE_STATE_PATH"),
+    { cloneDir: "./.packdev-agents/repo", statePath: "./.packdev-agents/triage-state.json" },
+    { cloneDir: "./.packdev-agents/repos", statePath: "./.packdev-agents/triage-state" },
+  );
+
+  const { port, path: webhookPath } = readWebhookConfig();
+  const repoEntries = new Map<string, { provider: Provider; run: () => Promise<void> }>();
+  for (const repo of repos) {
+    const provider = providers.get(repo)!;
+    const { cloneDir, statePath } = paths.get(repo)!;
+    repoEntries.set(repo, {
+      provider,
+      run: async () => {
+        throwOnRunFailure(await runTriageForRepo(repo, provider, cloneDir, statePath, ctx));
+      },
+    });
+  }
+
+  return createWebhookServer({ port, path: webhookPath, repos: repoEntries });
+}
+
+const USAGE = `Usage: packdev-agents <compat|triage> [--once|--webhook]
 
 Env vars (both subcommands):
   REPO              "owner/repo" — one repo
@@ -470,15 +643,38 @@ triage-only:
   TRIAGE_STATE_PATH   same one-repo-vs-REPOS-list shape as STATE_PATH above
                        (default ./.packdev-agents/triage-state.json or .../triage-state)
   MAX_TURNS
-  MODEL_PROVIDER=anthropic|openai-compatible (default anthropic) + ANTHROPIC_*/OPENAI_COMPATIBLE_*`;
+  MODEL_PROVIDER=anthropic|openai-compatible (default anthropic) + ANTHROPIC_*/OPENAI_COMPATIBLE_*
+
+--webhook mode (instead of the poll loop or --once):
+  WEBHOOK_PORT      optional, default 8080
+  WEBHOOK_PATH      optional, default /webhook
+  GITHUB_WEBHOOK_SECRET   required when PROVIDER=github
+  GITEA_WEBHOOK_SECRET    required when PROVIDER=gitea
+  A PROVIDER_MODULE must implement verifyWebhookSignature to be used here.
+  See docs/self-hosted.md for how to register the webhook URL on your forge.`;
 
 async function main(): Promise<void> {
   const [subcommand, ...rest] = process.argv.slice(2);
   const once = rest.includes("--once");
+  const webhook = rest.includes("--webhook");
 
   if (subcommand !== "compat" && subcommand !== "triage") {
     console.error(USAGE);
     process.exitCode = 1;
+    return;
+  }
+
+  if (once && webhook) {
+    throw new Error("--once and --webhook are mutually exclusive.");
+  }
+
+  if (webhook) {
+    const buildServer = subcommand === "compat" ? buildCompatWebhookServer : buildTriageWebhookServer;
+    const server = await buildServer();
+    process.once("SIGINT", () => void server.stop());
+    process.once("SIGTERM", () => void server.stop());
+    await server.start();
+    console.log(`[webhook] listening on port ${env("WEBHOOK_PORT") ?? "8080"}, path ${env("WEBHOOK_PATH") ?? "/webhook"}`);
     return;
   }
 
