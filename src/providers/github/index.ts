@@ -11,7 +11,7 @@ function verifyGithubWebhookSignature(
   rawBody: Buffer,
   headers: NodeJS.Dict<string | string[]>,
 ): boolean {
-  const secret = env["GITHUB_WEBHOOK_SECRET"];
+  const secret = env["PACKDEV_PROVIDER_WEBHOOK_SECRET"];
   if (!secret) return false;
   const header = headers["x-hub-signature-256"];
   const signatureHeader = Array.isArray(header) ? header[0] : header;
@@ -36,18 +36,18 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 function parseRepo(env: NodeJS.ProcessEnv): { owner: string; repo: string } {
-  const value = requireEnv(env, "REPO");
+  const value = requireEnv(env, "PACKDEV_REPO");
   const parts = value.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error(`REPO must be "owner/repo", got "${value}"`);
+    throw new Error(`PACKDEV_REPO must be "owner/repo", got "${value}"`);
   }
   return { owner: parts[0], repo: parts[1] };
 }
 
-/** Built-in "github" provider — see registry.ts for how PROVIDER selects this. */
+/** Built-in "github" provider — see registry.ts for how PACKDEV_PROVIDER selects this. */
 export const createGithubProvider: ProviderFactory = (env): Provider => {
   const { owner, repo } = parseRepo(env);
-  const token = requireEnv(env, "GITHUB_TOKEN");
+  const token = requireEnv(env, "PACKDEV_PROVIDER_TOKEN");
   const octokit = new Octokit({ auth: token });
 
   return {

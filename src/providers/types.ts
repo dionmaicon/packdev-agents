@@ -39,19 +39,19 @@ export interface GitRemote {
  * to a specific PR (comment/check-run/merge), and how to authenticate git
  * itself against it. `registry.ts` resolves one of these from the
  * environment — either a built-in (github, gitea) or a third party's own
- * module via PROVIDER_MODULE, so adding a new forge never requires a PR to
+ * module via PACKDEV_PROVIDER_MODULE, so adding a new forge never requires a PR to
  * this repo.
  */
 export interface Provider {
   createPullRequestSource(): PullRequestSource;
   createForgeOpsFor(pr: OpenBotPR): ForgeOps;
-  /** Used as the default REMOTE_URL/credential for git clone/fetch — see GitRemote's doc comment. */
+  /** Used as the default PACKDEV_REMOTE_URL/credential for git clone/fetch — see GitRemote's doc comment. */
   createGitRemote(): GitRemote;
   /**
    * Verifies an inbound webhook's signature against this provider's own
    * scheme (GitHub: HMAC-SHA256 over the raw body, "x-hub-signature-256"
    * header, "sha256=<hex>" — Gitea: HMAC-SHA256, "x-gitea-signature"
-   * header, bare hex). Optional: a PROVIDER_MODULE that doesn't implement
+   * header, bare hex). Optional: a PACKDEV_PROVIDER_MODULE that doesn't implement
    * this makes --webhook mode refuse to start with a clear error, rather
    * than silently accepting unverified requests. Must never throw — return
    * false for any failure (missing secret, missing/malformed header, or a
@@ -61,8 +61,8 @@ export interface Provider {
 }
 
 /**
- * What a PROVIDER_MODULE must default-export. Receives process.env so it
- * can read its own provider-specific variables (e.g. GITEA_URL) the same
+ * What a PACKDEV_PROVIDER_MODULE must default-export. Receives process.env so it
+ * can read its own provider-specific variables (e.g. PACKDEV_PROVIDER_URL) the same
  * way the built-in providers do — see registry.ts.
  */
 export type ProviderFactory = (env: NodeJS.ProcessEnv) => Provider;

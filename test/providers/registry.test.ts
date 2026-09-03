@@ -6,19 +6,19 @@ import path from "node:path";
 
 import { resolveProvider } from "../../src/providers/registry.ts";
 
-test("resolveProvider: no PROVIDER set -> defaults to github", async () => {
-  const provider = await resolveProvider({ REPO: "o/r", GITHUB_TOKEN: "t" });
+test("resolveProvider: no PACKDEV_PROVIDER set -> defaults to github", async () => {
+  const provider = await resolveProvider({ PACKDEV_REPO: "o/r", PACKDEV_PROVIDER_TOKEN: "t" });
   assert.equal(provider.createGitRemote().url, "https://github.com/o/r.git");
 });
 
-test("resolveProvider: unknown PROVIDER -> clear error naming the known built-ins", async () => {
+test("resolveProvider: unknown PACKDEV_PROVIDER -> clear error naming the known built-ins", async () => {
   await assert.rejects(
-    resolveProvider({ PROVIDER: "bitbucket", REPO: "o/r" }),
-    /Unknown PROVIDER "bitbucket".*github, gitea/,
+    resolveProvider({ PACKDEV_PROVIDER: "bitbucket", PACKDEV_REPO: "o/r" }),
+    /Unknown PACKDEV_PROVIDER "bitbucket".*github, gitea/,
   );
 });
 
-test("resolveProvider: PROVIDER_MODULE with a RELATIVE path resolves against process.cwd(), not this file's own location — the real bug this fixes", async () => {
+test("resolveProvider: PACKDEV_PROVIDER_MODULE with a RELATIVE path resolves against process.cwd(), not this file's own location — the real bug this fixes", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
   const originalCwd = process.cwd();
   try {
@@ -34,7 +34,7 @@ test("resolveProvider: PROVIDER_MODULE with a RELATIVE path resolves against pro
     );
     process.chdir(projectDir);
 
-    const provider = await resolveProvider({ PROVIDER_MODULE: "./my-provider.mjs" });
+    const provider = await resolveProvider({ PACKDEV_PROVIDER_MODULE: "./my-provider.mjs" });
     assert.equal(provider.createGitRemote().url, "https://example.test/custom.git");
   } finally {
     process.chdir(originalCwd);
@@ -42,7 +42,7 @@ test("resolveProvider: PROVIDER_MODULE with a RELATIVE path resolves against pro
   }
 });
 
-test("resolveProvider: PROVIDER_MODULE wins over PROVIDER when both are set", async () => {
+test("resolveProvider: PACKDEV_PROVIDER_MODULE wins over PACKDEV_PROVIDER when both are set", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
   const originalCwd = process.cwd();
   try {
@@ -58,7 +58,7 @@ test("resolveProvider: PROVIDER_MODULE wins over PROVIDER when both are set", as
     );
     process.chdir(projectDir);
 
-    const provider = await resolveProvider({ PROVIDER: "gitea", PROVIDER_MODULE: "./custom.mjs" });
+    const provider = await resolveProvider({ PACKDEV_PROVIDER: "gitea", PACKDEV_PROVIDER_MODULE: "./custom.mjs" });
     assert.equal(provider.createGitRemote().url, "https://example.test/wins.git");
   } finally {
     process.chdir(originalCwd);
@@ -66,7 +66,7 @@ test("resolveProvider: PROVIDER_MODULE wins over PROVIDER when both are set", as
   }
 });
 
-test("resolveProvider: PROVIDER_MODULE with a BARE package specifier resolves from the caller's own node_modules, not this file's own location", async () => {
+test("resolveProvider: PACKDEV_PROVIDER_MODULE with a BARE package specifier resolves from the caller's own node_modules, not this file's own location", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
   const originalCwd = process.cwd();
   try {
@@ -85,7 +85,7 @@ test("resolveProvider: PROVIDER_MODULE with a BARE package specifier resolves fr
     );
     process.chdir(projectDir);
 
-    const provider = await resolveProvider({ PROVIDER_MODULE: "my-custom-provider-pkg" });
+    const provider = await resolveProvider({ PACKDEV_PROVIDER_MODULE: "my-custom-provider-pkg" });
     assert.equal(provider.createGitRemote().url, "https://example.test/bare-specifier.git");
   } finally {
     process.chdir(originalCwd);
@@ -93,7 +93,7 @@ test("resolveProvider: PROVIDER_MODULE with a BARE package specifier resolves fr
   }
 });
 
-test("resolveProvider: PROVIDER_MODULE with a BARE specifier whose package.json exposes ONLY an \"import\" export condition (no \"require\"/\"main\") still resolves — require.resolve() can't see it, must fall back", async () => {
+test("resolveProvider: PACKDEV_PROVIDER_MODULE with a BARE specifier whose package.json exposes ONLY an \"import\" export condition (no \"require\"/\"main\") still resolves — require.resolve() can't see it, must fall back", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
   const originalCwd = process.cwd();
   try {
@@ -122,7 +122,7 @@ test("resolveProvider: PROVIDER_MODULE with a BARE specifier whose package.json 
     );
     process.chdir(projectDir);
 
-    const provider = await resolveProvider({ PROVIDER_MODULE: "esm-only-provider-pkg" });
+    const provider = await resolveProvider({ PACKDEV_PROVIDER_MODULE: "esm-only-provider-pkg" });
     assert.equal(provider.createGitRemote().url, "https://example.test/esm-only.git");
   } finally {
     process.chdir(originalCwd);
@@ -130,7 +130,7 @@ test("resolveProvider: PROVIDER_MODULE with a BARE specifier whose package.json 
   }
 });
 
-test("resolveProvider: PROVIDER_MODULE with no default export, or a non-function default -> clear error", async () => {
+test("resolveProvider: PACKDEV_PROVIDER_MODULE with no default export, or a non-function default -> clear error", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "packdev-agents-provider-module-"));
   const originalCwd = process.cwd();
   try {
@@ -138,7 +138,7 @@ test("resolveProvider: PROVIDER_MODULE with no default export, or a non-function
     process.chdir(projectDir);
 
     await assert.rejects(
-      resolveProvider({ PROVIDER_MODULE: "./bad.mjs" }),
+      resolveProvider({ PACKDEV_PROVIDER_MODULE: "./bad.mjs" }),
       /must have a default export that is a function/,
     );
   } finally {

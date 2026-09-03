@@ -37,7 +37,7 @@ assume inbound connectivity. Two options, in order of rollout priority:
 - A daemon/cron job on the user's box polls for open bot PRs on an
   interval — GitHub's `GET /repos/:owner/:repo/pulls` or the forge's own
   equivalent (Gitea's REST API is built in too; anything else plugs in via
-  `PROVIDER_MODULE`, no fork required).
+  `PACKDEV_PROVIDER_MODULE`, no fork required).
 - On a new PR: clone the branch, run packdev compat locally, hit the local
   model for the verdict, post the comment back via the resolved provider's
   own credential (GitHub PAT, Gitea token, or whatever a custom provider
@@ -68,7 +68,7 @@ assume inbound connectivity. Two options, in order of rollout priority:
 - On a signed `pull_request`-shaped webhook for a configured repo: verify
   the signature via the resolved provider (GitHub HMAC/`x-hub-signature-256`
   or Gitea HMAC/`x-gitea-signature`), then run the same compat/triage cycle
-  as polling mode — instant instead of waiting out `POLL_INTERVAL_SECONDS`.
+  as polling mode — instant instead of waiting out `PACKDEV_POLL_INTERVAL_SECONDS`.
 - Ships in the same `@packdev/agents` package/image as polling — no new
   infra to operate, just a different trigger for the identical pipeline.
 
