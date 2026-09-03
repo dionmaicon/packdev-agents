@@ -308,6 +308,42 @@ test("createWebhookServer: oversized body -> 413, run() not called", async () =>
   });
 });
 
+test("createWebhookServer: oversized body via STREAMING (chunked, no Content-Length) -> a clean 413 response, not ECONNRESET", async () => {
+  let ran = false;
+  const server = createWebhookServer({
+    port: 18098,
+    path: "/webhook",
+    repos: new Map([
+      ["owner/repo", { provider: fakeProvider(() => true), run: async () => { ran = true; } }],
+    ]),
+  });
+
+  await withServer(server, async () => {
+    // No content-length header -> Node sends this as a chunked-encoded
+    // request, so the server only discovers the overflow while streaming
+    // "data" events, not via the Content-Length fast path. Regression
+    // check for readRawBody destroying the socket mid-response, which
+    // used to surface as the client's request erroring with ECONNRESET
+    // instead of receiving the intended 413.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port: 18098, path: "/webhook", method: "POST", headers: { "content-type": "application/json" } },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode!));
+        },
+      );
+      req.on("error", reject);
+      const chunk = Buffer.alloc(256 * 1024, "a"); // 256KB per write, 8 writes -> 2MB total, over the 1MB cap
+      for (let i = 0; i < 8; i++) req.write(chunk);
+      req.end();
+    });
+    assert.equal(status, 413);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ran, false);
+  });
+});
+
 test("createWebhookServer: a verifyWebhookSignature that THROWS (contract violation) is treated as unverified, not an unhandled rejection", async () => {
   let ran = false;
   const server = createWebhookServer({

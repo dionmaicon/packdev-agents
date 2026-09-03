@@ -52,21 +52,36 @@ function readRawBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffe
     const contentLength = Number(req.headers["content-length"]);
     if (Number.isFinite(contentLength) && contentLength > maxBytes) {
       reject(new PayloadTooLargeError());
+      // Drain (not destroy) so the socket stays usable long enough for
+      // handleRequest's 413 response to actually reach the client — a
+      // destroyed request delivers ECONNRESET instead of a clean 413.
+      req.resume();
       return;
     }
     const chunks: Buffer[] = [];
     let total = 0;
+    let overLimit = false;
     req.on("data", (chunk: Buffer) => {
+      if (overLimit) return; // already rejected below; keep draining, don't re-reject
       total += chunk.length;
       if (total > maxBytes) {
+        overLimit = true;
         reject(new PayloadTooLargeError());
-        req.destroy();
+        // Same rationale as the Content-Length branch above: this handler
+        // stays attached and keeps consuming the remaining bytes (a chunked
+        // request has no declared length, so this is the only way to know
+        // it crossed the limit) instead of destroying the socket, so the
+        // 413 response can still be written and read by the client.
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!overLimit) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (error) => {
+      if (!overLimit) reject(error);
+    });
   });
 }
 
