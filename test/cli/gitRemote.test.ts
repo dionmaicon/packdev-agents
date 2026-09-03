@@ -28,35 +28,35 @@ test("sameHttpOrigin: invalid URL -> false, not a throw", () => {
   assert.equal(sameHttpOrigin("not a url", "https://github.com/a/b.git"), false);
 });
 
-test("resolveGitRemote: no REMOTE_URL override -> uses provider's own url + authHeader", () => {
-  delete process.env["REMOTE_URL"];
+test("resolveGitRemote: no PACKDEV_REMOTE_URL override -> uses provider's own url + authHeader", () => {
+  delete process.env["PACKDEV_REMOTE_URL"];
   const provider = { createGitRemote: () => ({ url: "https://github.com/a/b.git", authHeader: "Authorization: Basic secret" }) };
   const result = resolveGitRemote(provider);
   assert.equal(result.remoteUrl, "https://github.com/a/b.git");
   assert.equal(result.authHeader, "Authorization: Basic secret");
 });
 
-test("resolveGitRemote: REMOTE_URL override on the SAME origin -> authHeader still applied", () => {
-  process.env["REMOTE_URL"] = "https://github.com/other/repo.git";
+test("resolveGitRemote: PACKDEV_REMOTE_URL override on the SAME origin -> authHeader still applied", () => {
+  process.env["PACKDEV_REMOTE_URL"] = "https://github.com/other/repo.git";
   try {
     const provider = { createGitRemote: () => ({ url: "https://github.com/a/b.git", authHeader: "Authorization: Basic secret" }) };
     const result = resolveGitRemote(provider);
     assert.equal(result.remoteUrl, "https://github.com/other/repo.git");
     assert.equal(result.authHeader, "Authorization: Basic secret");
   } finally {
-    delete process.env["REMOTE_URL"];
+    delete process.env["PACKDEV_REMOTE_URL"];
   }
 });
 
-test("resolveGitRemote: REMOTE_URL override on a DIFFERENT origin -> authHeader is dropped, not leaked", () => {
-  process.env["REMOTE_URL"] = "https://evil.example.com/a/b.git";
+test("resolveGitRemote: PACKDEV_REMOTE_URL override on a DIFFERENT origin -> authHeader is dropped, not leaked", () => {
+  process.env["PACKDEV_REMOTE_URL"] = "https://evil.example.com/a/b.git";
   try {
     const provider = { createGitRemote: () => ({ url: "https://github.com/a/b.git", authHeader: "Authorization: Basic secret" }) };
     const result = resolveGitRemote(provider);
     assert.equal(result.remoteUrl, "https://evil.example.com/a/b.git");
     assert.equal(result.authHeader, undefined);
   } finally {
-    delete process.env["REMOTE_URL"];
+    delete process.env["PACKDEV_REMOTE_URL"];
   }
 });
 
@@ -77,33 +77,33 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => void): void
   }
 }
 
-test("readRepoList: REPO alone -> single-element list", () => {
-  withEnv({ REPO: "owner/repo", REPOS: undefined }, () => {
+test("readRepoList: PACKDEV_REPO alone -> single-element list", () => {
+  withEnv({ PACKDEV_REPO: "owner/repo", PACKDEV_REPOS: undefined }, () => {
     assert.deepEqual(readRepoList(), ["owner/repo"]);
   });
 });
 
-test("readRepoList: REPOS alone -> trimmed, comma-split list", () => {
-  withEnv({ REPO: undefined, REPOS: " owner/a, owner/b ,owner/c" }, () => {
+test("readRepoList: PACKDEV_REPOS alone -> trimmed, comma-split list", () => {
+  withEnv({ PACKDEV_REPO: undefined, PACKDEV_REPOS: " owner/a, owner/b ,owner/c" }, () => {
     assert.deepEqual(readRepoList(), ["owner/a", "owner/b", "owner/c"]);
   });
 });
 
-test("readRepoList: both REPO and REPOS set -> throws", () => {
-  withEnv({ REPO: "owner/repo", REPOS: "owner/a" }, () => {
+test("readRepoList: both PACKDEV_REPO and PACKDEV_REPOS set -> throws", () => {
+  withEnv({ PACKDEV_REPO: "owner/repo", PACKDEV_REPOS: "owner/a" }, () => {
     assert.throws(() => readRepoList(), /mutually exclusive/);
   });
 });
 
 test("readRepoList: neither set -> throws naming both", () => {
-  withEnv({ REPO: undefined, REPOS: undefined }, () => {
-    assert.throws(() => readRepoList(), /REPO \(or REPOS/);
+  withEnv({ PACKDEV_REPO: undefined, PACKDEV_REPOS: undefined }, () => {
+    assert.throws(() => readRepoList(), /PACKDEV_REPO \(or PACKDEV_REPOS/);
   });
 });
 
-test("readRepoList: REPOS all-commas -> throws instead of returning an empty list", () => {
-  withEnv({ REPO: undefined, REPOS: " , ," }, () => {
-    assert.throws(() => readRepoList(), /REPOS must contain at least one/);
+test("readRepoList: PACKDEV_REPOS all-commas -> throws instead of returning an empty list", () => {
+  withEnv({ PACKDEV_REPO: undefined, PACKDEV_REPOS: " , ," }, () => {
+    assert.throws(() => readRepoList(), /PACKDEV_REPOS must contain at least one/);
   });
 });
 
@@ -168,7 +168,7 @@ test("resolveRepoPaths: colliding-under-naive-sanitization repos get DISTINCT pa
   assert.notEqual(first.statePath, second.statePath);
 });
 
-test("resolveRepoPaths: multiple repos with explicit CLONE_DIR/STATE_PATH -> treated as roots, not literal paths", () => {
+test("resolveRepoPaths: multiple repos with explicit PACKDEV_CLONE_DIR/PACKDEV_STATE_PATH -> treated as roots, not literal paths", () => {
   const paths = resolveRepoPaths(
     ["owner/a", "owner/b"],
     "/data/clones",
@@ -183,14 +183,14 @@ test("resolveRepoPaths: multiple repos with explicit CLONE_DIR/STATE_PATH -> tre
   });
 });
 
-test("readCommonEnv: PROVIDER=github, no ALLOWED_ACTORS -> falls through to core's plain default (undefined here, resolved downstream)", () => {
-  withEnv({ ALLOWED_ACTORS: undefined, PROVIDER: "github" }, () => {
+test("readCommonEnv: PACKDEV_PROVIDER=github, no PACKDEV_ALLOWED_ACTORS -> falls through to core's plain default (undefined here, resolved downstream)", () => {
+  withEnv({ PACKDEV_ALLOWED_ACTORS: undefined, PACKDEV_PROVIDER: "github" }, () => {
     assert.equal(readCommonEnv().allowedActors, undefined);
   });
 });
 
-test("readCommonEnv: PROVIDER=gitea, no ALLOWED_ACTORS -> defaults ALSO include bare \"renovate\" (Gitea's actor field has no [bot] suffix)", () => {
-  withEnv({ ALLOWED_ACTORS: undefined, PROVIDER: "gitea" }, () => {
+test("readCommonEnv: PACKDEV_PROVIDER=gitea, no PACKDEV_ALLOWED_ACTORS -> defaults ALSO include bare \"renovate\" (Gitea's actor field has no [bot] suffix)", () => {
+  withEnv({ PACKDEV_ALLOWED_ACTORS: undefined, PACKDEV_PROVIDER: "gitea" }, () => {
     const actors = readCommonEnv().allowedActors;
     assert.ok(actors);
     assert.ok(actors!.includes("dependabot[bot]"));
@@ -199,8 +199,8 @@ test("readCommonEnv: PROVIDER=gitea, no ALLOWED_ACTORS -> defaults ALSO include 
   });
 });
 
-test("readCommonEnv: PROVIDER=gitea WITH an explicit ALLOWED_ACTORS -> the explicit value wins, no bare \"renovate\" silently added", () => {
-  withEnv({ ALLOWED_ACTORS: "dionmaicon", PROVIDER: "gitea" }, () => {
+test("readCommonEnv: PACKDEV_PROVIDER=gitea WITH an explicit PACKDEV_ALLOWED_ACTORS -> the explicit value wins, no bare \"renovate\" silently added", () => {
+  withEnv({ PACKDEV_ALLOWED_ACTORS: "dionmaicon", PACKDEV_PROVIDER: "gitea" }, () => {
     assert.deepEqual(readCommonEnv().allowedActors, ["dionmaicon"]);
   });
 });

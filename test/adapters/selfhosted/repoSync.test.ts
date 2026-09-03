@@ -108,7 +108,7 @@ test("ensureLocalClone: an existing clone with a STALE origin gets reset to remo
     const originAfterFirstClone = await git(cloneDir, ["remote", "get-url", "origin"]);
     assert.equal(originAfterFirstClone, remoteA);
 
-    // Simulate REPO/PROVIDER changing between cycles while CLONE_DIR is
+    // Simulate PACKDEV_REPO/PACKDEV_PROVIDER changing between cycles while PACKDEV_CLONE_DIR is
     // reused — the real-world scenario this guards against.
     await ensureLocalClone({ cloneDir, remoteUrl: remoteB });
     const originAfterSecondClone = await git(cloneDir, ["remote", "get-url", "origin"]);

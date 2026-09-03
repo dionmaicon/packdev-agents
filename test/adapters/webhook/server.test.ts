@@ -354,7 +354,7 @@ test("createWebhookServer: a verifyWebhookSignature that THROWS (contract violat
         "owner/repo",
         {
           provider: fakeProvider(() => {
-            throw new Error("buggy PROVIDER_MODULE");
+            throw new Error("buggy PACKDEV_PROVIDER_MODULE");
           }),
           run: async () => {
             ran = true;
