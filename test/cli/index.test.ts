@@ -55,202 +55,202 @@ test("unknown subcommand -> prints usage and exits 1", async () => {
   assert.match(stderr, /Usage: packdev-agents <compat\|triage>/);
 });
 
-test("compat --once: missing REPO -> fails with a clear message, no stack trace crash", async () => {
+test("compat --once: missing PACKDEV_REPO -> fails with a clear message, no stack trace crash", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {});
   assert.equal(exitCode, 1);
-  assert.match(stderr, /Missing required environment variable: REPO/);
+  assert.match(stderr, /Missing required environment variable: PACKDEV_REPO/);
 });
 
-test("compat --once: REPO set but missing GITHUB_TOKEN (default PROVIDER=github) -> fails with a clear message", async () => {
-  const { stderr, exitCode } = await runCli(["compat", "--once"], { REPO: "octocat/hello-world" });
+test("compat --once: PACKDEV_REPO set but missing PACKDEV_PROVIDER_TOKEN (default PACKDEV_PROVIDER=github) -> fails with a clear message", async () => {
+  const { stderr, exitCode } = await runCli(["compat", "--once"], { PACKDEV_REPO: "octocat/hello-world" });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /Missing required environment variable: GITHUB_TOKEN/);
+  assert.match(stderr, /Missing required environment variable: PACKDEV_PROVIDER_TOKEN/);
 });
 
-test("compat --once: malformed REPO (no slash) -> fails with a clear message", async () => {
+test("compat --once: malformed PACKDEV_REPO (no slash) -> fails with a clear message", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPO: "not-owner-slash-repo",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPO: "not-owner-slash-repo",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /REPO must be "owner\/repo"/);
+  assert.match(stderr, /PACKDEV_REPO must be "owner\/repo"/);
 });
 
-test("compat --once: provider resolves fine but neither TEST_COMMAND nor TEST_SCRIPT set -> fails with a clear message", async () => {
+test("compat --once: provider resolves fine but neither PACKDEV_TEST_COMMAND nor PACKDEV_TEST_SCRIPT set -> fails with a clear message", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /Exactly one of TEST_COMMAND\/TEST_SCRIPT/);
+  assert.match(stderr, /Exactly one of PACKDEV_TEST_COMMAND\/PACKDEV_TEST_SCRIPT/);
 });
 
-test("triage --once: does NOT require TEST_COMMAND/TEST_SCRIPT — fails on the model provider instead, proving the CR3 fix", async () => {
+test("triage --once: does NOT require PACKDEV_TEST_COMMAND/PACKDEV_TEST_SCRIPT — fails on the model provider instead, proving the CR3 fix", async () => {
   const { stderr, exitCode } = await runCli(["triage", "--once"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.doesNotMatch(stderr, /TEST_COMMAND/);
+  assert.doesNotMatch(stderr, /PACKDEV_TEST_COMMAND/);
   assert.match(stderr, /Missing required environment variable: ANTHROPIC_API_KEY/);
 });
 
-test("unset (loop mode): POLL_INTERVAL_SECONDS=0 is rejected before starting the loop", async () => {
+test("unset (loop mode): PACKDEV_POLL_INTERVAL_SECONDS=0 is rejected before starting the loop", async () => {
   const { stderr, exitCode } = await runCli(["compat"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    TEST_COMMAND: "true",
-    POLL_INTERVAL_SECONDS: "0",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_TEST_COMMAND: "true",
+    PACKDEV_POLL_INTERVAL_SECONDS: "0",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /POLL_INTERVAL_SECONDS must be a positive number/);
+  assert.match(stderr, /PACKDEV_POLL_INTERVAL_SECONDS must be a positive number/);
 });
 
-test("unset (loop mode): POLL_INTERVAL_SECONDS=notanumber is rejected before starting the loop", async () => {
+test("unset (loop mode): PACKDEV_POLL_INTERVAL_SECONDS=notanumber is rejected before starting the loop", async () => {
   const { stderr, exitCode } = await runCli(["compat"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    TEST_COMMAND: "true",
-    POLL_INTERVAL_SECONDS: "notanumber",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_TEST_COMMAND: "true",
+    PACKDEV_POLL_INTERVAL_SECONDS: "notanumber",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /POLL_INTERVAL_SECONDS must be a positive number/);
+  assert.match(stderr, /PACKDEV_POLL_INTERVAL_SECONDS must be a positive number/);
 });
 
-test("compat --once: REPO with extra path segments is rejected, not silently truncated", async () => {
+test("compat --once: PACKDEV_REPO with extra path segments is rejected, not silently truncated", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPO: "owner/repo/extra",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPO: "owner/repo/extra",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /REPO must be "owner\/repo"/);
+  assert.match(stderr, /PACKDEV_REPO must be "owner\/repo"/);
 });
 
-test("compat --once: TEST_COMBINED_BUMP=ture (typo) is rejected instead of silently treated as false", async () => {
+test("compat --once: PACKDEV_TEST_COMBINED_BUMP=ture (typo) is rejected instead of silently treated as false", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    TEST_COMMAND: "true",
-    TEST_COMBINED_BUMP: "ture",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_TEST_COMMAND: "true",
+    PACKDEV_TEST_COMBINED_BUMP: "ture",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /TEST_COMBINED_BUMP must be "true" or "false"/);
+  assert.match(stderr, /PACKDEV_TEST_COMBINED_BUMP must be "true" or "false"/);
 });
 
-test("triage --once: MAX_TURNS=notanumber is rejected before any network call", async () => {
+test("triage --once: PACKDEV_MAX_TURNS=notanumber is rejected before any network call", async () => {
   const { stderr, exitCode } = await runCli(["triage", "--once"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    MAX_TURNS: "notanumber",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_MAX_TURNS: "notanumber",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /MAX_TURNS must be a positive integer/);
+  assert.match(stderr, /PACKDEV_MAX_TURNS must be a positive integer/);
 });
 
-test("triage --once: MAX_TURNS=0 is rejected", async () => {
+test("triage --once: PACKDEV_MAX_TURNS=0 is rejected", async () => {
   const { stderr, exitCode } = await runCli(["triage", "--once"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    MAX_TURNS: "0",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_MAX_TURNS: "0",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /MAX_TURNS must be a positive integer/);
+  assert.match(stderr, /PACKDEV_MAX_TURNS must be a positive integer/);
 });
 
-test("compat --once: PROVIDER=gitea missing GITEA_USERNAME -> fails with a clear message", async () => {
+test("compat --once: PACKDEV_PROVIDER=gitea missing PACKDEV_PROVIDER_USERNAME -> fails with a clear message", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPO: "owner/repo",
-    PROVIDER: "gitea",
-    GITEA_URL: "https://gitea.example.com",
-    GITEA_TOKEN: "fake",
+    PACKDEV_REPO: "owner/repo",
+    PACKDEV_PROVIDER: "gitea",
+    PACKDEV_PROVIDER_URL: "https://gitea.example.com",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /Missing required environment variable: GITEA_USERNAME/);
+  assert.match(stderr, /Missing required environment variable: PACKDEV_PROVIDER_USERNAME/);
 });
 
-test("compat --once: REPO and REPOS both set -> clear mutually-exclusive error", async () => {
+test("compat --once: PACKDEV_REPO and PACKDEV_REPOS both set -> clear mutually-exclusive error", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPO: "owner/repo",
-    REPOS: "owner/a,owner/b",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPO: "owner/repo",
+    PACKDEV_REPOS: "owner/a,owner/b",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /REPO and REPOS are mutually exclusive/);
+  assert.match(stderr, /PACKDEV_REPO and PACKDEV_REPOS are mutually exclusive/);
 });
 
-test("compat --once: REPOS with one entry malformed among several -> whole run fails fast, config error names it", async () => {
+test("compat --once: PACKDEV_REPOS with one entry malformed among several -> whole run fails fast, config error names it", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPOS: "owner/good,not-owner-slash-repo",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPOS: "owner/good,not-owner-slash-repo",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /REPO must be "owner\/repo"/);
+  assert.match(stderr, /PACKDEV_REPO must be "owner\/repo"/);
 });
 
-test("compat --once: REPOS + REMOTE_URL together -> rejected, ambiguous which repo it applies to", async () => {
+test("compat --once: PACKDEV_REPOS + PACKDEV_REMOTE_URL together -> rejected, ambiguous which repo it applies to", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPOS: "owner/a,owner/b",
-    GITHUB_TOKEN: "fake",
-    REMOTE_URL: "https://example.test/custom.git",
+    PACKDEV_REPOS: "owner/a,owner/b",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_REMOTE_URL: "https://example.test/custom.git",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /REMOTE_URL cannot be used with multiple REPOS/);
+  assert.match(stderr, /PACKDEV_REMOTE_URL cannot be used with multiple PACKDEV_REPOS/);
 });
 
-test("compat --once: REPOS empty after trimming -> clear error", async () => {
+test("compat --once: PACKDEV_REPOS empty after trimming -> clear error", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once"], {
-    REPOS: " , ,",
-    GITHUB_TOKEN: "fake",
+    PACKDEV_REPOS: " , ,",
+    PACKDEV_PROVIDER_TOKEN: "fake",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /REPOS must contain at least one "owner\/repo"/);
+  assert.match(stderr, /PACKDEV_REPOS must contain at least one "owner\/repo"/);
 });
 
 test("compat --once --webhook together -> clear mutually-exclusive error", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--once", "--webhook"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    TEST_COMMAND: "true",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_TEST_COMMAND: "true",
   });
   assert.equal(exitCode, 1);
   assert.match(stderr, /--once and --webhook are mutually exclusive/);
 });
 
-test("compat --webhook: PROVIDER=github with no GITHUB_WEBHOOK_SECRET -> clear startup error, server never binds", async () => {
+test("compat --webhook: PACKDEV_PROVIDER=github with no PACKDEV_PROVIDER_WEBHOOK_SECRET -> clear startup error, server never binds", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--webhook"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    TEST_COMMAND: "true",
-    WEBHOOK_PORT: "0",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_TEST_COMMAND: "true",
+    PACKDEV_WEBHOOK_PORT: "0",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /Missing required environment variable: GITHUB_WEBHOOK_SECRET/);
+  assert.match(stderr, /Missing required environment variable: PACKDEV_PROVIDER_WEBHOOK_SECRET/);
 });
 
-test("compat --webhook: PROVIDER=gitea with no GITEA_WEBHOOK_SECRET -> clear startup error", async () => {
+test("compat --webhook: PACKDEV_PROVIDER=gitea with no PACKDEV_PROVIDER_WEBHOOK_SECRET -> clear startup error", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--webhook"], {
-    REPO: "owner/repo",
-    PROVIDER: "gitea",
-    GITEA_URL: "https://gitea.example.com",
-    GITEA_TOKEN: "fake",
-    GITEA_USERNAME: "u",
-    TEST_COMMAND: "true",
-    WEBHOOK_PORT: "0",
+    PACKDEV_REPO: "owner/repo",
+    PACKDEV_PROVIDER: "gitea",
+    PACKDEV_PROVIDER_URL: "https://gitea.example.com",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_PROVIDER_USERNAME: "u",
+    PACKDEV_TEST_COMMAND: "true",
+    PACKDEV_WEBHOOK_PORT: "0",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /Missing required environment variable: GITEA_WEBHOOK_SECRET/);
+  assert.match(stderr, /Missing required environment variable: PACKDEV_PROVIDER_WEBHOOK_SECRET/);
 });
 
-test("compat --webhook: WEBHOOK_PORT=notanumber is rejected before binding", async () => {
+test("compat --webhook: PACKDEV_WEBHOOK_PORT=notanumber is rejected before binding", async () => {
   const { stderr, exitCode } = await runCli(["compat", "--webhook"], {
-    REPO: "octocat/hello-world",
-    GITHUB_TOKEN: "fake",
-    TEST_COMMAND: "true",
-    GITHUB_WEBHOOK_SECRET: "s3cret",
-    WEBHOOK_PORT: "notanumber",
+    PACKDEV_REPO: "octocat/hello-world",
+    PACKDEV_PROVIDER_TOKEN: "fake",
+    PACKDEV_TEST_COMMAND: "true",
+    PACKDEV_PROVIDER_WEBHOOK_SECRET: "s3cret",
+    PACKDEV_WEBHOOK_PORT: "notanumber",
   });
   assert.equal(exitCode, 1);
-  assert.match(stderr, /WEBHOOK_PORT must be a positive integer/);
+  assert.match(stderr, /PACKDEV_WEBHOOK_PORT must be a positive integer/);
 });
 
 test("invoked through a SYMLINK (npm's actual bin mechanism) -> main() still runs, not silently a no-op", async () => {

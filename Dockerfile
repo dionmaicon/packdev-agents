@@ -1,6 +1,6 @@
 # @packdev/agents self-hosted CLI — forge-agnostic (GitHub, Gitea, or a
-# custom PROVIDER_MODULE), no GitHub dependency required at runtime.
-# Usage: docker run -e REPO=... -e PROVIDER=gitea -e ... <image> compat --once
+# custom PACKDEV_PROVIDER_MODULE), no GitHub dependency required at runtime.
+# Usage: docker run -e PACKDEV_REPO=... -e PACKDEV_PROVIDER=gitea -e ... <image> compat --once
 
 FROM node:24-alpine AS build
 WORKDIR /app

@@ -210,7 +210,7 @@ export function createWebhookServer(options: WebhookServerOptions): WebhookServe
         verified = entry.provider.verifyWebhookSignature?.(rawBody, req.headers) ?? false;
       } catch (error) {
         // The Provider contract says verifyWebhookSignature must never
-        // throw, but a third-party PROVIDER_MODULE could violate that —
+        // throw, but a third-party PACKDEV_PROVIDER_MODULE could violate that —
         // treat it the same as "false" rather than letting it become an
         // unhandled rejection that could take down the whole listener.
         console.error(`[webhook] verifyWebhookSignature threw, treating as unverified: ${String(error)}`);
