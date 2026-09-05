@@ -1,5 +1,5 @@
 /**
- * Library entrypoint for @packdev/agents — the typed surface a third party
+ * Library entrypoint for @tchebit/packdev-agents — the typed surface a third party
  * needs to write their own PACKDEV_PROVIDER_MODULE (see src/providers/registry.ts)
  * or embed the compat pipeline programmatically, without depending on this
  * package's internal file layout.

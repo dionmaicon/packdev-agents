@@ -711,7 +711,7 @@ async function main(): Promise<void> {
  * triggering a real CLI run as an import side effect.
  *
  * npm's bin mechanism invokes this file through a SYMLINK
- * (node_modules/.bin/packdev-agents -> ../@packdev/agents/dist/cli/index.js).
+ * (node_modules/.bin/packdev-agents -> ../@tchebit/packdev-agents/dist/cli/index.js).
  * `process.argv[1]` reports the symlink path as-typed, while
  * `import.meta.url` is this module's own real location — a naive string
  * comparison between the two never matches for a globally-installed or npx

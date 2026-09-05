@@ -1,5 +1,5 @@
 {
-  "name": "@packdev/agents",
+  "name": "@tchebit/packdev-agents",
   "version": "0.1.0",
   "description": "Dependabot/Renovate PR triage: run packdev compat checks and report a verdict back on the PR. Self-hosted CLI supports any forge (GitHub, Gitea, or a custom PROVIDER_MODULE) — no GitHub dependency required.",
   "type": "module",

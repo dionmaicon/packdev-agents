@@ -45,7 +45,7 @@ assume inbound connectivity. Two options, in order of rollout priority:
   (see `docs/self-hosted.md`'s Credentials section).
 - Higher latency than a webhook, but requires nothing beyond the box already
   running the daemon. Ships as `packdev-agents compat`/`packdev-agents triage`
-  (npm package `@packdev/agents`, or a Docker image) — see `docs/self-hosted.md`.
+  (npm package `@tchebit/packdev-agents`, or a Docker image) — see `docs/self-hosted.md`.
 
 ### 2b. Webhook relay (v2 — deferred until there's demand)
 
@@ -69,7 +69,7 @@ assume inbound connectivity. Two options, in order of rollout priority:
   the signature via the resolved provider (GitHub HMAC/`x-hub-signature-256`
   or Gitea HMAC/`x-gitea-signature`), then run the same compat/triage cycle
   as polling mode — instant instead of waiting out `PACKDEV_POLL_INTERVAL_SECONDS`.
-- Ships in the same `@packdev/agents` package/image as polling — no new
+- Ships in the same `@tchebit/packdev-agents` package/image as polling — no new
   infra to operate, just a different trigger for the identical pipeline.
 
 ## Shared core
