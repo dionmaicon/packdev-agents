@@ -1,0 +1,29 @@
+name: Dependabot compat check
+
+# Dogfoods this repo's own compat-check Action against its own
+# Dependabot/Renovate PRs (e.g. #17's qs bump) — verifies a dependency bump
+# doesn't break `npm test` before it's merged, on top of the plain CI run.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  compat:
+    if: github.actor == 'dependabot[bot]' || github.actor == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Local `uses: ./` needs the repo checked out first just to resolve
+      # action.yml — the composite action re-checks out with fetch-depth: 0
+      # itself for the actual compat run.
+      - uses: actions/checkout@v4
+
+      - uses: ./
+        with:
+          test-script: "test"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
