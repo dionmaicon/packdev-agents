@@ -14,7 +14,10 @@ permissions:
 
 jobs:
   compat:
-    if: github.actor == 'dependabot[bot]' || github.actor == 'renovate[bot]'
+    # github.actor is whoever caused this run (e.g. a maintainer's push that
+    # re-triggers checks on an open PR), not necessarily the PR's author —
+    # gate on the PR author itself so this doesn't silently skip.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' || github.event.pull_request.user.login == 'renovate[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
