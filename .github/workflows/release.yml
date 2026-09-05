@@ -2,7 +2,7 @@ name: Release
 
 # Triggered on a version tag push (e.g. `git tag v0.2.0 && git push --tags`)
 # — never on plain pushes/PRs, so this never runs by accident on a normal
-# commit. Publishes @packdev/agents to npm and pushes the Docker image to
+# commit. Publishes @tchebit/packdev-agents to npm and pushes the Docker image to
 # BOTH ghcr.io and Docker Hub from the same build.
 #
 # Requires three repo secrets that don't exist yet and must be added by

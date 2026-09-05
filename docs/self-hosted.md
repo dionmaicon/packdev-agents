@@ -28,7 +28,7 @@ doc is optional tuning.
 Minimal working example, GitHub, `compat` only, single run:
 
 ```sh
-npm install -g @packdev/agents
+npm install -g @tchebit/packdev-agents
 PACKDEV_REPO=owner/repo PACKDEV_PROVIDER_TOKEN=ghp_... PACKDEV_TEST_COMMAND="npm test" \
   packdev-agents compat --once
 ```
@@ -73,7 +73,7 @@ three choices — required vs. optional env vars, the credential model, the
 **npm:**
 
 ```sh
-npm install -g @packdev/agents
+npm install -g @tchebit/packdev-agents
 packdev-agents compat --once
 ```
 
@@ -299,10 +299,10 @@ the token never appears in `ps` output either.
 ## Writing a custom provider (`PACKDEV_PROVIDER_MODULE`)
 
 A provider is a small factory implementing this contract (from
-`@packdev/agents`'s exported types — `src/providers/types.ts`):
+`@tchebit/packdev-agents`'s exported types — `src/providers/types.ts`):
 
 ```ts
-import type { ProviderFactory } from "@packdev/agents";
+import type { ProviderFactory } from "@tchebit/packdev-agents";
 
 const createProvider: ProviderFactory = (env) => {
   // read whatever env vars your forge needs, e.g. env.MY_FORGE_TOKEN
